@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api, formatBytes } from '../api'
+import { toastOk, toastErr } from '../toast'
 
 const items = ref([])
 const error = ref('')
@@ -9,8 +10,13 @@ const form = ref({ name: '', traffic_limit: 0, duration_days: 0, note: '' })
 onMounted(load)
 
 async function load() {
-  const r = await api.plans()
-  items.value = r.items || []
+  try {
+    const r = await api.plans()
+    items.value = r.items || []
+  } catch (e) {
+    error.value = e.message
+    toastErr(e)
+  }
 }
 
 async function create() {
@@ -23,21 +29,33 @@ async function create() {
       note: form.value.note,
     })
     form.value = { name: '', traffic_limit: 0, duration_days: 0, note: '' }
+    toastOk('套餐已添加')
     await load()
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   }
 }
 
 async function save(p) {
-  await api.updatePlan(p.id, p)
-  await load()
+  try {
+    await api.updatePlan(p.id, p)
+    toastOk('套餐已保存')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 
 async function remove(id) {
   if (!confirm('删除套餐？已绑定用户会变成无套餐。')) return
-  await api.deletePlan(id)
-  await load()
+  try {
+    await api.deletePlan(id)
+    toastOk('套餐已删除')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 </script>
 

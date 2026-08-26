@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { toastOk, toastErr } from '../toast'
 
 const router = useRouter()
 const setupNeeded = ref(false)
@@ -41,9 +42,11 @@ async function submit() {
     } else {
       await api.login({ username: form.value.username, password: form.value.password })
     }
+    toastOk(setupNeeded.value ? '初始化完成' : '已登录')
     router.replace('/')
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   }
 }
 </script>

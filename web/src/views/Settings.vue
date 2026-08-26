@@ -1,27 +1,31 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
+import { toastOk, toastErr } from '../toast'
 
 const s = ref({ public_url: '', xray_path: '', listen: '', panel_host: '', version: '', repo: '' })
 const up = ref(null)
-const msg = ref('')
 const error = ref('')
 const checking = ref(false)
 const updating = ref(false)
 
 onMounted(async () => {
-  s.value = await api.settings()
-  await check()
+  try {
+    s.value = await api.settings()
+    await check()
+  } catch (e) {
+    toastErr(e)
+  }
 })
 
 async function save() {
   error.value = ''
-  msg.value = ''
   try {
     await api.saveSettings(s.value)
-    msg.value = '已保存。xray 路径立即生效，面板监听地址下次启动才变。'
+    toastOk('已保存。公网地址立即用于订阅和节点拉包。')
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   }
 }
 
@@ -30,8 +34,10 @@ async function check() {
   error.value = ''
   try {
     up.value = await api.updateStatus()
+    toastOk(up.value.newer ? `有新版本 ${up.value.latest}` : `已是最新 ${up.value.latest || s.value.version}`)
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   } finally {
     checking.value = false
   }
@@ -41,14 +47,14 @@ async function apply() {
   if (!confirm('从 GitHub Release 拉取新版本并替换本机 hallo，随后重启服务。继续？')) return
   updating.value = true
   error.value = ''
-  msg.value = ''
   try {
     const r = await api.applyUpdate()
-    msg.value = r.message || `已更新到 ${r.version || ''}，服务即将重启，请稍候刷新。`
-    if (r.warning) msg.value += ' ' + r.warning
+    toastOk(r.message || `已更新到 ${r.version || ''}，服务即将重启`)
+    if (r.warning) toastErr(r.warning)
     setTimeout(() => location.reload(), 2500)
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   } finally {
     updating.value = false
   }
@@ -93,7 +99,6 @@ async function apply() {
         <label class="label">当前面板监听（只读）</label>
         <input class="input bg-ink/[0.03]" :value="s.listen" disabled />
       </div>
-      <p v-if="msg" class="text-pine text-sm">{{ msg }}</p>
       <p v-if="error" class="text-red-700 text-sm">{{ error }}</p>
       <button class="btn-primary" type="submit">保存</button>
     </form>

@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api, formatBytes } from '../api'
+import { toastOk, toastErr } from '../toast'
 
 const users = ref([])
 const plans = ref([])
@@ -19,6 +20,7 @@ async function load() {
     if (!form.value.plan_id && plans.value.length) form.value.plan_id = plans.value[0].id
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   }
 }
 
@@ -32,40 +34,71 @@ async function create() {
     })
     form.value.email = ''
     form.value.remark = ''
+    toastOk('用户已添加')
     await load()
   } catch (e) {
     error.value = e.message
+    toastErr(e)
   }
 }
 
 async function toggle(u) {
-  await api.updateUser(u.id, { enabled: !u.enabled, email: u.email, remark: u.remark, plan_id: u.plan_id })
-  await load()
+  try {
+    await api.updateUser(u.id, { enabled: !u.enabled, email: u.email, remark: u.remark, plan_id: u.plan_id })
+    toastOk(u.enabled ? '已停用' : '已启用')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 
 async function resetTraffic(id) {
-  await api.resetTraffic(id)
-  await load()
+  try {
+    await api.resetTraffic(id)
+    toastOk('流量已清零')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 
 async function resetUUID(id) {
   if (!confirm('重置 UUID 和订阅 token？旧链接会失效。')) return
-  await api.resetUUID(id)
-  await load()
+  try {
+    await api.resetUUID(id)
+    toastOk('UUID 已重置，请重新复制链接')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 
 async function remove(id) {
   if (!confirm('删除该用户？')) return
-  await api.deleteUser(id)
-  await load()
+  try {
+    await api.deleteUser(id)
+    toastOk('用户已删除')
+    await load()
+  } catch (e) {
+    toastErr(e)
+  }
 }
 
 async function copy(text, key) {
-  await navigator.clipboard.writeText(text)
-  copied.value = key
-  setTimeout(() => {
-    if (copied.value === key) copied.value = ''
-  }, 1500)
+  if (!text) {
+    toastErr('没有可复制的内容')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = key
+    toastOk('已复制')
+    setTimeout(() => {
+      if (copied.value === key) copied.value = ''
+    }, 1500)
+  } catch (e) {
+    toastErr('复制失败')
+  }
 }
 
 function expire(u) {

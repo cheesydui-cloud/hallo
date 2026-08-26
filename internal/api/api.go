@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -58,6 +59,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/sub/{token}/clash", s.subscriptionClash)
 	r.Post("/api/agent/heartbeat", s.agentHeartbeat)
 	r.Get("/download/agent/{arch}", s.downloadAgent)
+	r.Get("/install/agent.sh", s.agentInstallScript)
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
@@ -948,9 +950,13 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pub := s.publicBase(r)
-	archCmd := `$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')`
-	install := "curl -fsSL " + pub + "/download/agent/" + archCmd + " -o /usr/local/bin/hallo-agent && chmod +x /usr/local/bin/hallo-agent && hallo-agent run --panel " + pub + " --node-id " + strconv.FormatInt(n.ID, 10) + " --token " + n.Token
-	writeJSON(w, 200, map[string]any{"node": n, "install_hint": install, "panel": pub})
+	install := "curl -fsSL '" + pub + "/install/agent.sh?token=" + n.Token + "' | sh"
+	writeJSON(w, 200, map[string]any{
+		"node":         n,
+		"install_hint": install,
+		"panel":        pub,
+		"message":      "节点已登记。请把安装命令拿到节点机用 root 执行；成功后这里会变成在线。",
+	})
 }
 
 func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
@@ -1060,6 +1066,48 @@ func (s *Server) downloadAgent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="hallo-agent"`)
 	http.ServeFile(w, r, p)
+}
+
+func (s *Server) agentInstallScript(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+	n, err := s.db.GetNodeByToken(token)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	pub := s.publicBase(r)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintf(w, `#!/bin/sh
+set -eu
+if [ "$(id -u)" != "0" ]; then
+  echo "请用 root 执行：curl -fsSL '%s/install/agent.sh?token=%s' | sh" >&2
+  exit 1
+fi
+arch=$(uname -m)
+case "$arch" in
+  x86_64|amd64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) echo "不支持的架构：$arch" >&2; exit 1 ;;
+esac
+url="%s/download/agent/$arch"
+echo "下载 hallo-agent $url"
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+curl -fL --connect-timeout 15 --max-time 180 -o "$tmp" "$url"
+# 简单校验 ELF，避免把 HTML 错误页当成二进制
+magic=$(od -An -N4 -tx1 "$tmp" | tr -d ' \n')
+if [ "$magic" != "7f454c46" ]; then
+  echo "下载到的不是 Linux 可执行文件（可能面板上还没暂存 agent）" >&2
+  head -c 200 "$tmp" >&2 || true
+  exit 1
+fi
+install -m 0755 "$tmp" /usr/local/bin/hallo-agent
+/usr/local/bin/hallo-agent install --panel '%s' --node-id '%d' --token '%s'
+`, pub, token, pub, pub, n.ID, token)
 }
 
 func (s *Server) publicBase(r *http.Request) string {

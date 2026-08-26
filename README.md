@@ -67,14 +67,21 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --upgrade --version v0.1.0
 ```
 
-### Agent 一键推送
+### Agent 安装（systemd，关掉 SSH 也还在）
 
 1. 设置里填好 **公网地址**（节点要能访问这块面板）
-2. **节点** 页添加节点，把安装命令拿到节点机执行
-3. 点该节点的 **推送更新**，或 **一键推送全部 Agent**
-4. 节点下次心跳（约 30 秒）会从 `http://面板/download/agent/<arch>` 拉新包并重启
+2. **节点** 页填写名字 → 添加节点（这只是登记，不会在节点机装东西）
+3. 复制命令，到**节点机 root** 执行，例如：
 
-不需要 SSH 上每台机器跑升级脚本。
+```bash
+curl -fsSL 'http://面板IP:18080/install/agent.sh?token=节点token' | sh
+```
+
+成功时节点机会打印 `hallo-agent 已安装并在 systemd 中运行`。面板里该节点变成「在线」，且 `systemctl status hallo-agent` 为 active。
+
+4. 以后点 **推送更新** / **一键推送全部 Agent**，节点下次心跳从面板拉新包并重启。
+
+不要用前台的 `hallo-agent run`：关掉终端进程就没了，面板却可能还显示刚才那次心跳为在线。
 
 ### 装完常用命令
 
