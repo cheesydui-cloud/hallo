@@ -1,0 +1,12 @@
+/data/
+/bin/
+/hallo
+/hallo.exe
+/web/node_modules/
+/web/dist/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+.env
+.zcode/
