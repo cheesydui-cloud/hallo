@@ -25,6 +25,7 @@ import (
 	"hallo/internal/config"
 	"hallo/internal/db"
 	"hallo/internal/models"
+	"hallo/internal/nodeconfig"
 	"hallo/internal/sub"
 	"hallo/internal/update"
 	"hallo/internal/xray"
@@ -84,6 +85,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/update", s.applyPanelUpdate)
 		r.Get("/api/nodes", s.listNodes)
 		r.Post("/api/nodes", s.createNode)
+		r.Put("/api/nodes/{id}", s.updateNode)
 		r.Delete("/api/nodes/{id}", s.deleteNode)
 		r.Post("/api/nodes/{id}/push-update", s.pushNodeUpdate)
 		r.Post("/api/nodes/push-update", s.pushAllNodeUpdates)
@@ -239,6 +241,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.SetSetting("public_url", pub)
 	_ = s.db.SetSetting("listen", s.cfg.Listen)
 	_ = s.db.SetSetting("xray_path", s.xray.Bin())
+	_ = s.ensureLocalNode(body.Port, pub)
 
 	expires := time.Now().Add(7 * 24 * time.Hour)
 	tok, err := auth.RandomToken(32)
@@ -255,21 +258,25 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+func (s *Server) defaultInboundPort() int {
+	if s.cfg.Dev {
+		return 18443
+	}
+	return 443
+}
+
 func (s *Server) ensureInbound(port int) error {
-	if _, err := s.db.GetInbound(); err == nil {
-		return nil
+	if in, err := s.db.GetInbound(); err == nil {
+		return s.repairInbound(in)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if port == 0 {
-		port = 443
-		if s.cfg.Dev {
-			port = 18443
-		}
+		port = s.defaultInboundPort()
 	}
 	priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
 	if err != nil {
-		priv, pub = "CHANGE_ME_PRIVATE", "CHANGE_ME_PUBLIC"
+		return err
 	}
 	return s.db.SaveInbound(models.Inbound{
 		Protocol:   "vless",
@@ -282,6 +289,31 @@ func (s *Server) ensureInbound(port int) error {
 		PublicKey:  pub,
 		ShortID:    xray.RandomShortID(),
 	})
+}
+
+func (s *Server) repairInbound(in *models.Inbound) error {
+	if in == nil {
+		return nil
+	}
+	changed := false
+	if xray.IsPlaceholderKey(in.PrivateKey) || xray.IsPlaceholderKey(in.PublicKey) ||
+		!xray.ValidRealityKey(in.PrivateKey) || !xray.ValidRealityKey(in.PublicKey) {
+		priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
+		if err != nil {
+			return err
+		}
+		in.PrivateKey = priv
+		in.PublicKey = pub
+		changed = true
+	}
+	if strings.TrimSpace(in.ShortID) == "" {
+		in.ShortID = xray.RandomShortID()
+		changed = true
+	}
+	if changed {
+		return s.db.SaveInbound(*in)
+	}
+	return nil
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -332,11 +364,20 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if in != nil {
 		port = in.Port
 	}
+	nodes, _ := s.db.ListNodes()
+	online := 0
+	for _, nd := range nodes {
+		if nd.Online || nd.IsLocal {
+			online++
+		}
+	}
 	writeJSON(w, 200, models.Dashboard{
 		SetupNeeded:  n == 0,
 		UserTotal:    ut,
 		UserEnabled:  ue,
 		PlanTotal:    pt,
+		NodeTotal:    len(nodes),
+		NodeOnline:   online,
 		TrafficTotal: tr,
 		XrayRunning:  s.xray.Running(),
 		XrayPath:     s.xray.Bin(),
@@ -422,28 +463,28 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	host := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+	fallback := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
 	in, _ := s.db.GetInbound()
 	type item struct {
 		models.User
-		SubURL     string `json:"sub_url"`
-		VlessLink  string `json:"vless_link"`
-		ClashURL   string `json:"clash_url"`
-		PublicHost string `json:"public_host"`
+		SubURL     string   `json:"sub_url"`
+		VlessLink  string   `json:"vless_link"`
+		VlessLinks []string `json:"vless_links"`
+		ClashURL   string   `json:"clash_url"`
+		PublicHost string   `json:"public_host"`
+		Active     bool     `json:"active"`
 	}
 	out := make([]item, 0, len(items))
-	pub := strings.TrimRight(s.db.GetSetting("public_url", ""), "/")
-	if pub == "" {
-		scheme := "http"
-		if s.cookieSecure(r) {
-			scheme = "https"
-		}
-		pub = scheme + "://" + r.Host
-	}
+	pub := s.publicBase(r)
 	for _, u := range items {
-		it := item{User: u, PublicHost: host, SubURL: sub.SubURL(pub, u.SubToken), ClashURL: sub.SubURL(pub, u.SubToken) + "/clash"}
+		it := item{User: u, PublicHost: fallback, SubURL: sub.SubURL(pub, u.SubToken), ClashURL: sub.SubURL(pub, u.SubToken) + "/clash", Active: s.db.UserActive(u)}
 		if in != nil {
-			it.VlessLink = sub.VLESSLink(host, *in, u)
+			eps, _ := nodeconfig.Endpoints(s.db, u, *in, fallback)
+			links := sub.LinksForEndpoints(eps, u)
+			it.VlessLinks = links
+			if len(links) > 0 {
+				it.VlessLink = links[0]
+			}
 		}
 		out = append(out, it)
 	}
@@ -452,9 +493,10 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email  string `json:"email"`
-		Remark string `json:"remark"`
-		PlanID *int64 `json:"plan_id"`
+		Email   string  `json:"email"`
+		Remark  string  `json:"remark"`
+		PlanID  *int64  `json:"plan_id"`
+		NodeIDs []int64 `json:"node_ids"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "参数错误")
@@ -495,6 +537,11 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.ID = id
+	if err := s.db.SetUserNodes(id, body.NodeIDs); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	u.NodeIDs = body.NodeIDs
 	_ = s.syncXray()
 	writeJSON(w, 200, u)
 }
@@ -516,6 +563,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		PlanID   *int64  `json:"plan_id"`
 		Enabled  *bool   `json:"enabled"`
 		ExpireAt *string `json:"expire_at"`
+		NodeIDs  []int64 `json:"node_ids"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "参数错误")
@@ -547,6 +595,15 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.UpdateUser(*cur); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if body.NodeIDs != nil {
+		if err := s.db.SetUserNodes(cur.ID, body.NodeIDs); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		cur.NodeIDs = body.NodeIDs
+	} else {
+		cur.NodeIDs, _ = s.db.UserNodeIDs(cur.ID)
 	}
 	_ = s.syncXray()
 	writeJSON(w, 200, cur)
@@ -609,7 +666,32 @@ func (s *Server) getInbound(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "尚未配置入站")
 		return
 	}
-	writeJSON(w, 200, in)
+	if err := s.repairInbound(in); err != nil {
+		writeErr(w, 500, "修复 Reality 密钥失败："+err.Error())
+		return
+	}
+	writeJSON(w, 200, s.inboundView(*in))
+}
+
+func (s *Server) inboundView(in models.Inbound) map[string]any {
+	return map[string]any{
+		"id":           in.ID,
+		"protocol":     in.Protocol,
+		"listen":       in.Listen,
+		"port":         in.Port,
+		"flow":         in.Flow,
+		"dest":         in.Dest,
+		"server_name":  in.ServerName,
+		"private_key":  in.PrivateKey,
+		"public_key":   in.PublicKey,
+		"short_id":     in.ShortID,
+		"keys_ok":      xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey),
+		"xray_running": s.xray.Running(),
+		"xray_path":    s.xray.Bin(),
+		"xray_message": s.xray.Message(),
+		"dev":          s.cfg.Dev,
+		"default_port": s.defaultInboundPort(),
+	}
 }
 
 func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
@@ -625,17 +707,37 @@ func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
 		in.Listen = "0.0.0.0"
 	}
 	if in.Port == 0 {
-		in.Port = 443
+		in.Port = s.defaultInboundPort()
+	}
+	if xray.IsPlaceholderKey(in.PrivateKey) || xray.IsPlaceholderKey(in.PublicKey) ||
+		!xray.ValidRealityKey(in.PrivateKey) || !xray.ValidRealityKey(in.PublicKey) {
+		priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
+		if err != nil {
+			writeErr(w, 500, "生成 Reality 密钥失败："+err.Error())
+			return
+		}
+		in.PrivateKey = priv
+		in.PublicKey = pub
+	}
+	if strings.TrimSpace(in.ShortID) == "" {
+		in.ShortID = xray.RandomShortID()
 	}
 	if err := s.db.SaveInbound(in); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if local, err := s.db.LocalNode(); err == nil && in.Port > 0 {
+		local.Port = in.Port
+		_ = s.db.UpdateNode(*local)
+	}
 	if err := s.syncXray(); err != nil {
-		writeJSON(w, 200, map[string]any{"ok": true, "warning": err.Error()})
+		view := s.inboundView(in)
+		view["ok"] = true
+		view["warning"] = err.Error()
+		writeJSON(w, 200, view)
 		return
 	}
-	writeJSON(w, 200, in)
+	writeJSON(w, 200, s.inboundView(in))
 }
 
 func (s *Server) regenKeys(w http.ResponseWriter, r *http.Request) {
@@ -646,7 +748,7 @@ func (s *Server) regenKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
 	if err != nil {
-		writeErr(w, 400, err.Error())
+		writeErr(w, 500, "生成 Reality 密钥失败："+err.Error())
 		return
 	}
 	in.PrivateKey = priv
@@ -656,8 +758,14 @@ func (s *Server) regenKeys(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.syncXray()
-	writeJSON(w, 200, in)
+	if err := s.syncXray(); err != nil {
+		view := s.inboundView(*in)
+		view["ok"] = true
+		view["warning"] = err.Error()
+		writeJSON(w, 200, view)
+		return
+	}
+	writeJSON(w, 200, s.inboundView(*in))
 }
 
 func (s *Server) reloadXray(w http.ResponseWriter, r *http.Request) {
@@ -699,10 +807,15 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	host := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+	fallback := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+	eps, err := nodeconfig.Endpoints(s.db, *u, *in, fallback)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Profile-Update-Interval", "24")
-	_, _ = w.Write([]byte(sub.Base64VLESS(host, *in, *u)))
+	_, _ = w.Write([]byte(sub.Base64Links(sub.LinksForEndpoints(eps, *u))))
 }
 
 func (s *Server) subscriptionClash(w http.ResponseWriter, r *http.Request) {
@@ -711,9 +824,14 @@ func (s *Server) subscriptionClash(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	host := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+	fallback := sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+	eps, err := nodeconfig.Endpoints(s.db, *u, *in, fallback)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
-	_, _ = w.Write([]byte(sub.ClashYAML(host, *in, *u)))
+	_, _ = w.Write([]byte(sub.ClashYAMLMulti(eps, *u)))
 }
 
 func (s *Server) subUser(r *http.Request) (*models.User, *models.Inbound, error) {
@@ -722,9 +840,11 @@ func (s *Server) subUser(r *http.Request) (*models.User, *models.Inbound, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !u.Enabled {
+	if !s.db.UserActive(*u) {
 		return nil, nil, sql.ErrNoRows
 	}
+	ids, _ := s.db.UserNodeIDs(u.ID)
+	u.NodeIDs = ids
 	in, err := s.db.GetInbound()
 	if err != nil {
 		return nil, nil, err
@@ -732,20 +852,72 @@ func (s *Server) subUser(r *http.Request) (*models.User, *models.Inbound, error)
 	return u, in, nil
 }
 
+func (s *Server) RepairInbound() error {
+	in, err := s.db.GetInbound()
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if err := s.repairInbound(in); err != nil {
+		return err
+	}
+	return s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", ""))
+}
+
+func (s *Server) ensureLocalNode(port int, publicURL string) error {
+	if _, err := s.db.LocalNode(); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if port == 0 {
+		port = s.defaultInboundPort()
+	}
+	tok, err := auth.RandomToken(24)
+	if err != nil {
+		return err
+	}
+	host := sub.PublicHost(publicURL, "")
+	_, err = s.db.CreateNode(models.Node{
+		Name:       "本机",
+		Token:      tok,
+		PublicHost: host,
+		Port:       port,
+		IsLocal:    true,
+		Enabled:    true,
+		Subscribe:  true,
+	})
+	if err == nil {
+		_, _ = s.db.BumpConfigRev()
+	}
+	return err
+}
+
 func (s *Server) syncXray() error {
 	in, err := s.db.GetInbound()
 	if err != nil {
 		return err
 	}
-	users, err := s.db.ActiveUsers()
+	if err := s.repairInbound(in); err != nil {
+		return err
+	}
+	_ = s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", ""))
+	_, _ = s.db.BumpConfigRev()
+	local, err := s.db.LocalNode()
+	if err != nil {
+		return nil
+	}
+	cfg, err := nodeconfig.Build(s.db, *local, *in)
 	if err != nil {
 		return err
 	}
-	if err := s.xray.WriteConfig(*in, users); err != nil {
+	if err := s.xray.WriteConfigBytes(cfg); err != nil {
 		return err
 	}
 	if _, err := os.Stat(s.xray.Bin()); err != nil {
-		return nil // config written; binary optional in phase 1
+		return nil
 	}
 	return s.xray.Reload()
 }
@@ -918,12 +1090,27 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	for i := range items {
+		if items[i].IsLocal {
+			items[i].Online = true
+			items[i].XrayRunning = s.xray.Running()
+			items[i].XrayMessage = s.xray.Message()
+			if items[i].PublicHost == "" {
+				items[i].PublicHost = sub.PublicHost(s.db.GetSetting("public_url", ""), hostname(r))
+			}
+		}
+	}
 	writeJSON(w, 200, map[string]any{"items": items, "panel_version": s.version, "agent_staged": s.stagedAgents()})
 }
 
 func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name        string `json:"name"`
+		PublicHost  string `json:"public_host"`
+		Port        int    `json:"port"`
+		RelayNodeID *int64 `json:"relay_node_id"`
+		Subscribe   *bool  `json:"subscribe"`
+		Enabled     *bool  `json:"enabled"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "参数错误")
@@ -939,24 +1126,127 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	id, err := s.db.CreateNode(body.Name, tok)
+	port := body.Port
+	if port == 0 {
+		if in, err := s.db.GetInbound(); err == nil {
+			port = in.Port
+		}
+		if port == 0 {
+			port = s.defaultInboundPort()
+		}
+	}
+	n := models.Node{
+		Name:        body.Name,
+		Token:       tok,
+		PublicHost:  strings.TrimSpace(body.PublicHost),
+		Port:        port,
+		RelayNodeID: body.RelayNodeID,
+		Enabled:     true,
+		Subscribe:   true,
+	}
+	if body.Enabled != nil {
+		n.Enabled = *body.Enabled
+	}
+	if body.Subscribe != nil {
+		n.Subscribe = *body.Subscribe
+	}
+	if n.RelayNodeID != nil && *n.RelayNodeID > 0 {
+		uuidTok, err := auth.RandomToken(16)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		n.RelayUUID = formatRelayUUID(uuidTok)
+	}
+	id, err := s.db.CreateNode(n)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	n, err := s.db.GetNode(id)
+	saved, err := s.db.GetNode(id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	_ = s.syncXray()
 	pub := s.publicBase(r)
-	install := "curl -fsSL '" + pub + "/install/agent.sh?token=" + n.Token + "' | sh"
+	install := "curl -fsSL '" + pub + "/install/agent.sh?token=" + saved.Token + "' | sh"
 	writeJSON(w, 200, map[string]any{
-		"node":         n,
+		"node":         saved,
 		"install_hint": install,
 		"panel":        pub,
-		"message":      "节点已登记。请把安装命令拿到节点机用 root 执行；成功后这里会变成在线。",
+		"message":      "节点已登记。把安装命令拿到节点机 root 执行后，那台机器会装 Xray 并开始转发。",
 	})
+}
+
+func formatRelayUUID(hexTok string) string {
+	h := strings.ReplaceAll(hexTok, "-", "")
+	if len(h) < 32 {
+		h = h + strings.Repeat("0", 32-len(h))
+	}
+	h = h[:32]
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	cur, err := s.db.GetNode(id)
+	if err != nil {
+		writeErr(w, 404, "节点不存在")
+		return
+	}
+	var body struct {
+		Name        string `json:"name"`
+		PublicHost  string `json:"public_host"`
+		Port        *int   `json:"port"`
+		RelayNodeID *int64 `json:"relay_node_id"`
+		Subscribe   *bool  `json:"subscribe"`
+		Enabled     *bool  `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	if strings.TrimSpace(body.Name) != "" {
+		cur.Name = strings.TrimSpace(body.Name)
+	}
+	if body.PublicHost != "" {
+		cur.PublicHost = strings.TrimSpace(body.PublicHost)
+	}
+	if body.Port != nil && *body.Port > 0 {
+		cur.Port = *body.Port
+	}
+	if body.Subscribe != nil {
+		cur.Subscribe = *body.Subscribe
+	}
+	if body.Enabled != nil {
+		cur.Enabled = *body.Enabled
+	}
+	if body.RelayNodeID != nil {
+		if *body.RelayNodeID <= 0 {
+			cur.RelayNodeID = nil
+			cur.RelayUUID = ""
+		} else if cur.RelayNodeID == nil || *cur.RelayNodeID != *body.RelayNodeID {
+			idv := *body.RelayNodeID
+			cur.RelayNodeID = &idv
+			tok, err := auth.RandomToken(16)
+			if err != nil {
+				writeErr(w, 500, err.Error())
+				return
+			}
+			cur.RelayUUID = formatRelayUUID(tok)
+		}
+	}
+	if err := s.db.UpdateNode(*cur); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	_ = s.syncXray()
+	writeJSON(w, 200, cur)
 }
 
 func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
@@ -966,9 +1256,10 @@ func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.db.DeleteNode(id); err != nil {
-		writeErr(w, 500, err.Error())
+		writeErr(w, 400, err.Error())
 		return
 	}
+	_ = s.syncXray()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -1018,12 +1309,20 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "无效 token")
 		return
 	}
-	_ = s.db.TouchNode(n.ID, hb.Version, hb.Arch, hb.Host)
+	host := strings.TrimSpace(hb.Host)
+	if strings.TrimSpace(hb.PublicIP) != "" {
+		host = strings.TrimSpace(hb.PublicIP)
+	}
+	_ = s.db.TouchNode(n.ID, hb.Version, hb.Arch, host, hb.XrayRunning, hb.XrayMessage)
+	if n.PublicHost == "" && host != "" {
+		n.PublicHost = host
+		_ = s.db.UpdateNode(*n)
+	}
 	if n.ForceUpdate && hb.Version != "" && n.DesiredVer != "" && n.DesiredVer != "latest" && !update.Newer(n.DesiredVer, hb.Version) {
 		_ = s.db.ClearNodeForce(n.ID)
 		n.ForceUpdate = false
 	}
-	pub := strings.TrimRight(s.db.GetSetting("public_url", ""), "/")
+	pub := s.publicBase(r)
 	arch := hb.Arch
 	if arch == "" {
 		arch = n.Arch
@@ -1034,14 +1333,36 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if arch == "aarch64" {
 		arch = "arm64"
 	}
+	fresh, _ := s.db.GetNode(n.ID)
+	if fresh != nil {
+		n = fresh
+	}
 	reply := agentproto.HeartbeatReply{
 		OK:           true,
 		PanelVersion: s.version,
 		DesiredVer:   n.DesiredVer,
 		ForceUpdate:  n.ForceUpdate,
+		ConfigRev:    n.ConfigRev,
+		Node: agentproto.NodeInfo{
+			ID:         n.ID,
+			Name:       n.Name,
+			PublicHost: n.PublicHost,
+			Port:       n.Port,
+			Enabled:    n.Enabled,
+		},
 	}
 	if n.ForceUpdate && pub != "" && arch != "" {
 		reply.UpdateURL = pub + "/download/agent/" + arch
+	}
+	needCfg := n.Enabled && (hb.ConfigRev == "" || hb.ConfigRev != n.ConfigRev)
+	if needCfg {
+		in, err := s.db.GetInbound()
+		if err == nil {
+			if cfg, err := nodeconfig.Build(s.db, *n, *in); err == nil {
+				reply.Config = cfg
+				reply.ConfigRev = n.ConfigRev
+			}
+		}
 	}
 	writeJSON(w, 200, reply)
 }

@@ -1,14 +1,15 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { toastOk, toastErr } from '../toast'
 
 const items = ref([])
-const name = ref('')
 const error = ref('')
 const hint = ref('')
 const staged = ref({})
 const busy = ref(false)
+const editing = ref(null)
+const form = ref({ name: '', public_host: '', port: 443, relay_node_id: 0 })
 
 onMounted(load)
 
@@ -24,21 +25,47 @@ async function load() {
   }
 }
 
+const relayOptions = computed(() => items.value.filter((n) => n.enabled))
+
 async function create() {
   error.value = ''
   hint.value = ''
   busy.value = true
   try {
-    const r = await api.createNode({ name: name.value })
-    name.value = ''
+    const payload = {
+      name: form.value.name,
+      public_host: form.value.public_host,
+      port: Number(form.value.port) || 443,
+    }
+    if (form.value.relay_node_id) payload.relay_node_id = Number(form.value.relay_node_id)
+    const r = await api.createNode(payload)
+    form.value = { name: '', public_host: '', port: 443, relay_node_id: 0 }
     hint.value = r.install_hint || ''
-    toastOk(r.message || '节点已登记，请把命令拿到节点机用 root 执行')
+    toastOk(r.message || '节点已登记，请到节点机执行安装命令')
     await load()
   } catch (e) {
     error.value = e.message
     toastErr(e)
   } finally {
     busy.value = false
+  }
+}
+
+async function save(n) {
+  try {
+    await api.updateNode(n.id, {
+      name: n.name,
+      public_host: n.public_host,
+      port: Number(n.port) || 443,
+      relay_node_id: n.relay_node_id || 0,
+      subscribe: n.subscribe,
+      enabled: n.enabled,
+    })
+    toastOk('节点已保存，配置会在下次心跳下发')
+    editing.value = null
+    await load()
+  } catch (e) {
+    toastErr(e)
   }
 }
 
@@ -63,10 +90,14 @@ async function pushAll() {
   }
 }
 
-async function remove(id) {
-  if (!confirm('删除该节点？节点机上的 hallo-agent 服务不会自动卸载。')) return
+async function remove(n) {
+  if (n.is_local) {
+    toastErr('本机节点不能删除')
+    return
+  }
+  if (!confirm('删除该节点？节点机上的 hallo-agent 不会自动卸载。')) return
   try {
-    await api.deleteNode(id)
+    await api.deleteNode(n.id)
     toastOk('节点已从面板删除')
     await load()
   } catch (e) {
@@ -75,86 +106,136 @@ async function remove(id) {
 }
 
 function seen(n) {
+  if (n.is_local) return '面板本机，直接跑 Xray'
   if (!n.last_seen) return '从未上线（命令还没在节点机跑成功）'
   return new Date(n.last_seen).toLocaleString()
+}
+
+function relayName(n) {
+  if (!n.relay_node_id) return ''
+  const t = items.value.find((x) => x.id === n.relay_node_id)
+  return t ? t.name : '#' + n.relay_node_id
 }
 
 async function copy(text) {
   try {
     await navigator.clipboard.writeText(text)
-    toastOk('安装命令已复制')
+    toastOk('已复制')
   } catch {
-    toastErr('复制失败，请手动选中命令')
+    toastErr('复制失败，请手动选中')
   }
+}
+
+function installCmd(n) {
+  return `curl -fsSL '${location.origin}/install/agent.sh?token=${n.token}' | sh`
 }
 </script>
 
 <template>
   <div>
-    <div class="flex items-end justify-between mb-6">
+    <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
       <div>
-        <h2 class="font-display text-3xl">节点 / Agent</h2>
-        <p class="text-ink/50 text-sm mt-1">
-          添加节点只是在面板登记。必须把下面的命令拿到<strong>节点机 root</strong> 执行，装上 systemd 后才会真正在线。
+        <h2 class="font-display text-3xl">节点</h2>
+        <p class="text-ink/50 text-sm mt-1 max-w-2xl">
+          每台节点机都会跑官方 Xray。订阅链接用的是节点的<strong>公网地址 + 入站端口</strong>，不是面板端口。
+          链式转发：入口节点把流量转到另一台节点再出网。
         </p>
       </div>
       <button class="btn-primary" @click="pushAll">一键推送全部 Agent</button>
     </div>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
     <p class="text-xs text-ink/40 mb-4">
-      已暂存 agent：{{ Object.keys(staged).length ? Object.keys(staged).join(', ') : '无（先在设置里更新面板）' }}
+      已暂存 agent：{{ Object.keys(staged).length ? Object.keys(staged).join(', ') : '无（先在设置里更新面板，或重跑安装脚本）' }}
     </p>
 
-    <form class="card p-5 mb-6 flex gap-3 items-end" @submit.prevent="create">
-      <div class="flex-1">
+    <form class="card p-5 mb-6 grid md:grid-cols-5 gap-3 items-end" @submit.prevent="create">
+      <div>
         <label class="label">节点名</label>
-        <input class="input" v-model="name" required placeholder="hk-1" />
+        <input class="input" v-model="form.name" required placeholder="洛杉矶 / 香港" />
+      </div>
+      <div>
+        <label class="label">公网地址（IP 或域名）</label>
+        <input class="input" v-model="form.public_host" placeholder="可空，上线后自动填" />
+      </div>
+      <div>
+        <label class="label">入站端口</label>
+        <input class="input" type="number" v-model.number="form.port" />
+      </div>
+      <div>
+        <label class="label">链式转发到</label>
+        <select class="input" v-model.number="form.relay_node_id">
+          <option :value="0">直连出网</option>
+          <option v-for="n in relayOptions" :key="n.id" :value="n.id">{{ n.name }}</option>
+        </select>
       </div>
       <button class="btn-primary h-10" type="submit" :disabled="busy">{{ busy ? '登记中…' : '添加节点' }}</button>
     </form>
 
     <div v-if="hint" class="card p-5 mb-6">
-      <div class="text-sm font-medium mb-1">节点机用 root 执行（成功会打印「已安装并在 systemd 中运行」）</div>
+      <div class="text-sm font-medium mb-1">到节点机用 root 执行（成功会打印「已安装并在 systemd 中运行」）</div>
       <pre class="text-xs whitespace-pre-wrap break-all bg-ink/[0.04] rounded-xl p-3">{{ hint }}</pre>
-      <button class="btn-ghost text-xs mt-3" @click="copy(hint)">复制命令</button>
+      <button class="btn-ghost text-xs mt-3" type="button" @click="copy(hint)">复制命令</button>
     </div>
 
-    <div class="card overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="bg-ink/[0.03] text-ink/50 text-left">
-          <tr>
-            <th class="px-4 py-3 font-medium">节点</th>
-            <th class="px-4 py-3 font-medium">版本</th>
-            <th class="px-4 py-3 font-medium">状态</th>
-            <th class="px-4 py-3 font-medium"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="n in items" :key="n.id" class="border-t border-ink/5">
-            <td class="px-4 py-3">
-              <div class="font-medium">{{ n.name }}</div>
-              <div class="text-xs text-ink/40">{{ n.host || '—' }} · {{ n.arch || '未知架构' }}</div>
-              <div class="text-[11px] text-ink/35 break-all mt-1">token {{ n.token }}</div>
-            </td>
-            <td class="px-4 py-3">
-              {{ n.version || '—' }}
-              <div v-if="n.force_update" class="text-xs text-accent">待更新 → {{ n.desired_version }}</div>
-            </td>
-            <td class="px-4 py-3">
-              <span :class="n.online ? 'text-pine' : 'text-ink/40'">{{ n.online ? '在线' : '离线' }}</span>
-              <div class="text-xs text-ink/35">{{ seen(n) }}</div>
-            </td>
-            <td class="px-4 py-3 text-right whitespace-nowrap space-x-1">
-              <button class="btn-ghost text-xs" @click="copy(`curl -fsSL '${location.origin}/install/agent.sh?token=${n.token}' | sh`)">复制安装命令</button>
-              <button class="btn-ghost text-xs" @click="pushOne(n.id)">推送更新</button>
-              <button class="btn-ghost text-xs text-red-700" @click="remove(n.id)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="!items.length">
-            <td colspan="4" class="px-4 py-10 text-center text-ink/40">还没有节点。单机只用面板时可以不填。</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="space-y-3">
+      <article v-for="n in items" :key="n.id" class="card p-5">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="font-medium text-lg">{{ n.name }}</h3>
+              <span class="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full" :class="n.is_local ? 'bg-pine/10 text-pine' : 'bg-ink/5 text-ink/50'">
+                {{ n.is_local ? '本机' : 'Agent' }}
+              </span>
+              <span class="text-[11px]" :class="n.online || n.is_local ? 'text-pine' : 'text-ink/40'">
+                {{ n.online || n.is_local ? '在线' : '离线' }}
+              </span>
+            </div>
+            <p class="text-xs text-ink/45 mt-1">
+              {{ n.public_host || n.host || '尚未上报地址' }}:{{ n.port || 443 }}
+              · Xray {{ n.xray_running || (n.is_local && n.online) ? '运行中' : (n.xray_message || '未启动') }}
+            </p>
+            <p class="text-xs text-ink/35 mt-1">{{ seen(n) }}</p>
+            <p v-if="n.relay_node_id" class="text-xs text-accent mt-1">链式转发 → {{ relayName(n) }}</p>
+          </div>
+          <div class="flex flex-wrap gap-1 justify-end">
+            <button v-if="!n.is_local" class="btn-ghost text-xs" type="button" @click="copy(installCmd(n))">复制安装命令</button>
+            <button v-if="!n.is_local" class="btn-ghost text-xs" type="button" @click="pushOne(n.id)">推送更新</button>
+            <button class="btn-ghost text-xs" type="button" @click="editing = editing === n.id ? null : n.id">{{ editing === n.id ? '收起' : '编辑' }}</button>
+            <button v-if="!n.is_local" class="btn-ghost text-xs text-red-700" type="button" @click="remove(n)">删除</button>
+          </div>
+        </div>
+        <form v-if="editing === n.id" class="grid md:grid-cols-4 gap-3 mt-4 pt-4 border-t border-ink/5" @submit.prevent="save(n)">
+          <div>
+            <label class="label">名称</label>
+            <input class="input" v-model="n.name" />
+          </div>
+          <div>
+            <label class="label">公网地址</label>
+            <input class="input" v-model="n.public_host" :placeholder="n.host || '节点公网 IP'" />
+          </div>
+          <div>
+            <label class="label">入站端口</label>
+            <input class="input" type="number" v-model.number="n.port" />
+          </div>
+          <div>
+            <label class="label">链式转发到</label>
+            <select class="input" v-model.number="n.relay_node_id">
+              <option :value="0">直连出网</option>
+              <option v-for="o in items.filter((x) => x.id !== n.id)" :key="o.id" :value="o.id">{{ o.name }}</option>
+            </select>
+          </div>
+          <label class="flex items-center gap-2 text-sm md:col-span-2">
+            <input type="checkbox" v-model="n.subscribe" />
+            写入订阅
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" v-model="n.enabled" />
+            启用
+          </label>
+          <button class="btn-primary" type="submit">保存</button>
+        </form>
+      </article>
+      <div v-if="!items.length" class="card px-4 py-10 text-center text-ink/40">还没有节点。初始化后会出现「本机」。</div>
     </div>
   </div>
 </template>

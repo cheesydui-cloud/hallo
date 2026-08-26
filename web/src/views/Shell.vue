@@ -41,7 +41,7 @@ async function logout() {
     <header class="px-6 py-5 flex items-center gap-8">
       <div>
         <div class="font-display text-2xl leading-none">Hallo</div>
-        <div class="text-[11px] tracking-widest uppercase text-ink/40 mt-1">自研单节点面板</div>
+        <div class="text-[11px] tracking-widest uppercase text-ink/40 mt-1">多节点 Reality 面板</div>
       </div>
       <nav class="flex gap-1 flex-1">
         <router-link

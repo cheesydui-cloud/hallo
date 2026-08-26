@@ -31,10 +31,15 @@ type User struct {
 	Enabled     bool       `json:"enabled"`
 	SubToken    string     `json:"sub_token"`
 	CreatedAt   time.Time  `json:"created_at"`
+	NodeIDs     []int64    `json:"node_ids"`
 }
 
 func (u User) TrafficTotal() int64 {
 	return u.TrafficUp + u.TrafficDown
+}
+
+func (u User) Expired() bool {
+	return u.ExpireAt != nil && time.Now().After(*u.ExpireAt)
 }
 
 type Inbound struct {
@@ -65,6 +70,16 @@ type Node struct {
 	Token       string     `json:"token"`
 	Arch        string     `json:"arch"`
 	Host        string     `json:"host"`
+	PublicHost  string     `json:"public_host"`
+	Port        int        `json:"port"`
+	RelayNodeID *int64     `json:"relay_node_id"`
+	RelayUUID   string     `json:"relay_uuid"`
+	IsLocal     bool       `json:"is_local"`
+	Enabled     bool       `json:"enabled"`
+	Subscribe   bool       `json:"subscribe"`
+	XrayRunning bool       `json:"xray_running"`
+	XrayMessage string     `json:"xray_message"`
+	ConfigRev   string     `json:"config_rev"`
 	Version     string     `json:"version"`
 	DesiredVer  string     `json:"desired_version"`
 	ForceUpdate bool       `json:"force_update"`
@@ -78,6 +93,8 @@ type Dashboard struct {
 	UserTotal    int    `json:"user_total"`
 	UserEnabled  int    `json:"user_enabled"`
 	PlanTotal    int    `json:"plan_total"`
+	NodeTotal    int    `json:"node_total"`
+	NodeOnline   int    `json:"node_online"`
 	TrafficTotal int64  `json:"traffic_total"`
 	XrayRunning  bool   `json:"xray_running"`
 	XrayPath     string `json:"xray_path"`

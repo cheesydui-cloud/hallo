@@ -44,6 +44,7 @@ export const api = {
   applyUpdate: () => request('/api/update', { method: 'POST', body: {} }),
   nodes: () => request('/api/nodes'),
   createNode: (body) => request('/api/nodes', { method: 'POST', body }),
+  updateNode: (id, body) => request(`/api/nodes/${id}`, { method: 'PUT', body }),
   deleteNode: (id) => request(`/api/nodes/${id}`, { method: 'DELETE' }),
   pushNodeUpdate: (id) => request(`/api/nodes/${id}/push-update`, { method: 'POST', body: {} }),
   pushAllNodeUpdates: () => request('/api/nodes/push-update', { method: 'POST', body: {} }),

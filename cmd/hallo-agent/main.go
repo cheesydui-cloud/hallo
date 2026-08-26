@@ -14,11 +14,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"hallo/internal/agentproto"
 	"hallo/internal/update"
+	"hallo/internal/xray"
 )
 
 var version = "dev"
@@ -53,17 +55,40 @@ func usage() {
   hallo-agent run --panel URL --token TOKEN
   hallo-agent version
 
-install 会写入 systemd 并启动。关掉 SSH 后进程仍在。
-环境变量：HALLO_PANEL HALLO_NODE_ID HALLO_TOKEN
+install 会写入 systemd、尽量安装官方 Xray，并启动。关掉 SSH 后进程仍在。
+节点机会按面板下发的配置跑 VLESS + Reality；可链式转发到另一台节点。
+环境变量：HALLO_PANEL HALLO_NODE_ID HALLO_TOKEN HALLO_XRAY
 `, version)
+}
+
+type agentRuntime struct {
+	mu        sync.Mutex
+	xm        *xray.Manager
+	configRev string
+	dataDir   string
 }
 
 func run(args []string) {
 	panel, nodeID, token, interval := parseConnFlags("run", args)
 	host, _ := os.Hostname()
-	cli := &http.Client{Timeout: 30 * time.Second}
-
-	go beat(panel, nodeID, token, host, cli)
+	cli := &http.Client{Timeout: 45 * time.Second}
+	data := "/var/lib/hallo-agent"
+	if v := os.Getenv("HALLO_AGENT_DATA"); v != "" {
+		data = v
+	}
+	_ = os.MkdirAll(data, 0o750)
+	bin, err := xray.EnsureBinary(xray.DefaultBin(data))
+	if err != nil {
+		log.Printf("安装/查找 xray 失败：%v（仍会心跳，配置下发后会再试）", err)
+		bin = xray.DefaultBin(data)
+	} else {
+		log.Printf("xray：%s", bin)
+	}
+	rt := &agentRuntime{
+		xm:      xray.New(bin, filepath.Join(data, "xray", "config.json")),
+		dataDir: data,
+	}
+	go rt.beat(panel, nodeID, token, host, cli)
 	tk := time.NewTicker(interval)
 	defer tk.Stop()
 	ch := make(chan os.Signal, 1)
@@ -71,8 +96,9 @@ func run(args []string) {
 	for {
 		select {
 		case <-tk.C:
-			go beat(panel, nodeID, token, host, cli)
+			go rt.beat(panel, nodeID, token, host, cli)
 		case <-ch:
+			rt.xm.Stop()
 			return
 		}
 	}
@@ -83,7 +109,7 @@ func parseConnFlags(name string, args []string) (panel, nodeID, token string, in
 	p := fs.String("panel", os.Getenv("HALLO_PANEL"), "面板地址，如 http://1.2.3.4:18080")
 	id := fs.String("node-id", os.Getenv("HALLO_NODE_ID"), "节点 ID（可选）")
 	tok := fs.String("token", os.Getenv("HALLO_TOKEN"), "节点 token")
-	iv := fs.Duration("interval", 30*time.Second, "心跳间隔")
+	iv := fs.Duration("interval", 20*time.Second, "心跳间隔")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*p) == "" || strings.TrimSpace(*tok) == "" {
 		log.Fatal("需要 --panel 和 --token")
@@ -106,7 +132,15 @@ func install(args []string) {
 	if err := os.MkdirAll("/etc/hallo", 0o755); err != nil {
 		log.Fatal(err)
 	}
-	env := fmt.Sprintf("HALLO_PANEL=%s\nHALLO_NODE_ID=%s\nHALLO_TOKEN=%s\n", panel, nodeID, token)
+	if err := os.MkdirAll("/var/lib/hallo-agent", 0o750); err != nil {
+		log.Fatal(err)
+	}
+	if bin, err := xray.EnsureBinary("/usr/local/bin/xray"); err != nil {
+		log.Printf("自动安装 xray 失败：%v（服务仍会启动，稍后重试）", err)
+	} else {
+		log.Printf("xray：%s", bin)
+	}
+	env := fmt.Sprintf("HALLO_PANEL=%s\nHALLO_NODE_ID=%s\nHALLO_TOKEN=%s\nHALLO_XRAY=/usr/local/bin/xray\nHALLO_AGENT_DATA=/var/lib/hallo-agent\n", panel, nodeID, token)
 	if err := os.WriteFile("/etc/hallo/agent.env", []byte(env), 0o600); err != nil {
 		log.Fatal(err)
 	}
@@ -121,6 +155,9 @@ EnvironmentFile=-/etc/hallo/agent.env
 ExecStart=` + self + ` run
 Restart=always
 RestartSec=2
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -145,14 +182,24 @@ WantedBy=multi-user.target
 	fmt.Println("  日志：journalctl -u hallo-agent -n 50 --no-pager")
 }
 
-func beat(panel, nodeID, token, host string, cli *http.Client) {
+func (rt *agentRuntime) beat(panel, nodeID, token, host string, cli *http.Client) {
+	rt.mu.Lock()
+	rev := rt.configRev
+	running := rt.xm.Running()
+	msg := rt.xm.Message()
+	rt.mu.Unlock()
+
 	body, _ := json.Marshal(agentproto.Heartbeat{
-		NodeID:  nodeID,
-		Token:   token,
-		Version: version,
-		Arch:    runtime.GOARCH,
-		OS:      runtime.GOOS,
-		Host:    host,
+		NodeID:      nodeID,
+		Token:       token,
+		Version:     version,
+		Arch:        runtime.GOARCH,
+		OS:          runtime.GOOS,
+		Host:        host,
+		PublicIP:    publicIP(cli),
+		XrayRunning: running,
+		XrayMessage: msg,
+		ConfigRev:   rev,
 	})
 	req, err := http.NewRequest(http.MethodPost, panel+"/api/agent/heartbeat", bytes.NewReader(body))
 	if err != nil {
@@ -166,7 +213,7 @@ func beat(panel, nodeID, token, host string, cli *http.Client) {
 		return
 	}
 	defer res.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if res.StatusCode != 200 {
 		log.Printf("heartbeat %s: %s", res.Status, raw)
 		return
@@ -175,6 +222,13 @@ func beat(panel, nodeID, token, host string, cli *http.Client) {
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		log.Printf("heartbeat decode: %v", err)
 		return
+	}
+	if reply.Config != nil {
+		if err := rt.applyConfig(reply.ConfigRev, reply.Config); err != nil {
+			log.Printf("应用 Xray 配置失败：%v", err)
+		} else {
+			log.Printf("已应用配置 %s，Xray %s", reply.ConfigRev, rt.xm.Message())
+		}
 	}
 	if !reply.ForceUpdate || reply.UpdateURL == "" {
 		return
@@ -189,6 +243,49 @@ func beat(panel, nodeID, token, host string, cli *http.Client) {
 		log.Printf("重启：%v", err)
 		os.Exit(0)
 	}
+}
+
+func (rt *agentRuntime) applyConfig(rev string, cfg map[string]any) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if _, err := os.Stat(rt.xm.Bin()); err != nil {
+		if bin, err := xray.EnsureBinary(rt.xm.Bin()); err == nil {
+			rt.xm.SetBin(bin)
+		} else {
+			return err
+		}
+	}
+	if err := rt.xm.WriteConfigBytes(cfg); err != nil {
+		return err
+	}
+	if err := rt.xm.Reload(); err != nil {
+		return err
+	}
+	rt.configRev = rev
+	return nil
+}
+
+func publicIP(cli *http.Client) string {
+	urls := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	c := *cli
+	c.Timeout = 4 * time.Second
+	for _, u := range urls {
+		res, err := c.Get(u)
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 64))
+		res.Body.Close()
+		ip := strings.TrimSpace(string(b))
+		if ip != "" && !strings.Contains(ip, " ") && !strings.Contains(ip, "<") {
+			return ip
+		}
+	}
+	return ""
 }
 
 func applyUpdate(url string) error {

@@ -100,8 +100,62 @@ CREATE TABLE IF NOT EXISTS nodes (
   last_seen DATETIME,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS user_nodes (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, node_id)
+);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return d.ensureColumns()
+}
+
+func (d *DB) ensureColumns() error {
+	type col struct{ table, name, def string }
+	cols := []col{
+		{"nodes", "public_host", "TEXT NOT NULL DEFAULT ''"},
+		{"nodes", "port", "INTEGER NOT NULL DEFAULT 443"},
+		{"nodes", "relay_node_id", "INTEGER"},
+		{"nodes", "relay_uuid", "TEXT NOT NULL DEFAULT ''"},
+		{"nodes", "is_local", "INTEGER NOT NULL DEFAULT 0"},
+		{"nodes", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"nodes", "subscribe", "INTEGER NOT NULL DEFAULT 1"},
+		{"nodes", "xray_running", "INTEGER NOT NULL DEFAULT 0"},
+		{"nodes", "xray_message", "TEXT NOT NULL DEFAULT ''"},
+		{"nodes", "config_rev", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, c := range cols {
+		if d.hasColumn(c.table, c.name) {
+			continue
+		}
+		if _, err := d.SQL.Exec("ALTER TABLE " + c.table + " ADD COLUMN " + c.name + " " + c.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DB) hasColumn(table, name string) bool {
+	rows, err := d.SQL.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var col, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &col, &typ, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if col == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *DB) AdminCount() (int, error) {
@@ -242,7 +296,10 @@ ORDER BY u.id DESC`)
 	if out == nil {
 		out = []models.User{}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, d.AttachUserNodes(out)
 }
 
 type scanner interface {
@@ -283,25 +340,27 @@ func parseTime(v string) (time.Time, error) {
 
 func (d *DB) GetUser(id int64) (*models.User, error) {
 	row := d.SQL.QueryRow(`
-SELECT u.id, u.email, u.remark, u.uuid, u.plan_id, COALESCE(p.name, ''), u.expire_at,
-       u.traffic_up, u.traffic_down, u.enabled, u.sub_token, u.created_at
-FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.id = ?`, id)
+	SELECT u.id, u.email, u.remark, u.uuid, u.plan_id, COALESCE(p.name, ''), u.expire_at,
+	       u.traffic_up, u.traffic_down, u.enabled, u.sub_token, u.created_at
+	FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.id = ?`, id)
 	u, err := scanUser(row)
 	if err != nil {
 		return nil, err
 	}
+	u.NodeIDs, _ = d.UserNodeIDs(u.ID)
 	return &u, nil
 }
 
 func (d *DB) GetUserBySubToken(token string) (*models.User, error) {
 	row := d.SQL.QueryRow(`
-SELECT u.id, u.email, u.remark, u.uuid, u.plan_id, COALESCE(p.name, ''), u.expire_at,
-       u.traffic_up, u.traffic_down, u.enabled, u.sub_token, u.created_at
-FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.sub_token = ?`, token)
+	SELECT u.id, u.email, u.remark, u.uuid, u.plan_id, COALESCE(p.name, ''), u.expire_at,
+	       u.traffic_up, u.traffic_down, u.enabled, u.sub_token, u.created_at
+	FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.sub_token = ?`, token)
 	u, err := scanUser(row)
 	if err != nil {
 		return nil, err
 	}
+	u.NodeIDs, _ = d.UserNodeIDs(u.ID)
 	return &u, nil
 }
 
@@ -371,7 +430,107 @@ func (d *DB) ActiveUsers() ([]models.User, error) {
 		if u.ExpireAt != nil && now.After(*u.ExpireAt) {
 			continue
 		}
+		if u.PlanID != nil {
+			p, err := d.GetPlan(*u.PlanID)
+			if err == nil && p.TrafficLimit > 0 && u.TrafficTotal() >= p.TrafficLimit {
+				continue
+			}
+		}
 		out = append(out, u)
+	}
+	if out == nil {
+		out = []models.User{}
+	}
+	return out, nil
+}
+
+func (d *DB) UserActive(u models.User) bool {
+	if !u.Enabled {
+		return false
+	}
+	if u.ExpireAt != nil && time.Now().After(*u.ExpireAt) {
+		return false
+	}
+	if u.PlanID != nil {
+		p, err := d.GetPlan(*u.PlanID)
+		if err == nil && p.TrafficLimit > 0 && u.TrafficTotal() >= p.TrafficLimit {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *DB) SetUserNodes(userID int64, nodeIDs []int64) error {
+	if _, err := d.SQL.Exec(`DELETE FROM user_nodes WHERE user_id=?`, userID); err != nil {
+		return err
+	}
+	for _, nid := range nodeIDs {
+		if nid <= 0 {
+			continue
+		}
+		if _, err := d.SQL.Exec(`INSERT OR IGNORE INTO user_nodes (user_id, node_id) VALUES (?, ?)`, userID, nid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DB) UserNodeIDs(userID int64) ([]int64, error) {
+	rows, err := d.SQL.Query(`SELECT node_id FROM user_nodes WHERE user_id=? ORDER BY node_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	if out == nil {
+		out = []int64{}
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) AttachUserNodes(users []models.User) error {
+	for i := range users {
+		ids, err := d.UserNodeIDs(users[i].ID)
+		if err != nil {
+			return err
+		}
+		users[i].NodeIDs = ids
+	}
+	return nil
+}
+
+func (d *DB) UsersForNode(nodeID int64) ([]models.User, error) {
+	users, err := d.ActiveUsers()
+	if err != nil {
+		return nil, err
+	}
+	if err := d.AttachUserNodes(users); err != nil {
+		return nil, err
+	}
+	var out []models.User
+	assigned := 0
+	for _, u := range users {
+		if len(u.NodeIDs) == 0 {
+			out = append(out, u)
+			continue
+		}
+		assigned++
+		for _, id := range u.NodeIDs {
+			if id == nodeID {
+				out = append(out, u)
+				break
+			}
+		}
+	}
+	if assigned == 0 {
+		return users, nil
 	}
 	if out == nil {
 		out = []models.User{}
@@ -405,26 +564,44 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
+const nodeSelect = `SELECT id, name, token, arch, host, public_host, port, relay_node_id, relay_uuid, is_local, enabled, subscribe, xray_running, xray_message, config_rev, version, desired_version, force_update, last_seen, created_at FROM nodes`
+
 func scanNode(s scanner) (models.Node, error) {
 	var n models.Node
 	var last sql.NullString
-	var force int
-	err := s.Scan(&n.ID, &n.Name, &n.Token, &n.Arch, &n.Host, &n.Version, &n.DesiredVer, &force, &last, &n.CreatedAt)
+	var force, isLocal, enabled, subscribe, xrayRun int
+	var relay sql.NullInt64
+	err := s.Scan(&n.ID, &n.Name, &n.Token, &n.Arch, &n.Host, &n.PublicHost, &n.Port, &relay, &n.RelayUUID,
+		&isLocal, &enabled, &subscribe, &xrayRun, &n.XrayMessage, &n.ConfigRev, &n.Version, &n.DesiredVer, &force, &last, &n.CreatedAt)
 	if err != nil {
 		return n, err
 	}
 	n.ForceUpdate = force != 0
+	n.IsLocal = isLocal != 0
+	n.Enabled = enabled != 0
+	n.Subscribe = subscribe != 0
+	n.XrayRunning = xrayRun != 0
+	if relay.Valid && relay.Int64 > 0 {
+		id := relay.Int64
+		n.RelayNodeID = &id
+	}
+	if n.Port == 0 {
+		n.Port = 443
+	}
 	if last.Valid && last.String != "" {
 		if t, err := parseTime(last.String); err == nil {
 			n.LastSeen = &t
 			n.Online = time.Since(t) < 90*time.Second
 		}
 	}
+	if n.IsLocal {
+		n.Online = true
+	}
 	return n, nil
 }
 
 func (d *DB) ListNodes() ([]models.Node, error) {
-	rows, err := d.SQL.Query(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes ORDER BY id`)
+	rows, err := d.SQL.Query(nodeSelect + ` ORDER BY is_local DESC, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +621,7 @@ func (d *DB) ListNodes() ([]models.Node, error) {
 }
 
 func (d *DB) GetNode(id int64) (*models.Node, error) {
-	row := d.SQL.QueryRow(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes WHERE id = ?`, id)
+	row := d.SQL.QueryRow(nodeSelect+` WHERE id = ?`, id)
 	n, err := scanNode(row)
 	if err != nil {
 		return nil, err
@@ -453,7 +630,7 @@ func (d *DB) GetNode(id int64) (*models.Node, error) {
 }
 
 func (d *DB) GetNodeByToken(token string) (*models.Node, error) {
-	row := d.SQL.QueryRow(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes WHERE token = ?`, token)
+	row := d.SQL.QueryRow(nodeSelect+` WHERE token = ?`, token)
 	n, err := scanNode(row)
 	if err != nil {
 		return nil, err
@@ -461,23 +638,93 @@ func (d *DB) GetNodeByToken(token string) (*models.Node, error) {
 	return &n, nil
 }
 
-func (d *DB) CreateNode(name, token string) (int64, error) {
-	res, err := d.SQL.Exec(`INSERT INTO nodes (name, token) VALUES (?, ?)`, name, token)
+func (d *DB) LocalNode() (*models.Node, error) {
+	row := d.SQL.QueryRow(nodeSelect + ` WHERE is_local=1 ORDER BY id LIMIT 1`)
+	n, err := scanNode(row)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (d *DB) CreateNode(n models.Node) (int64, error) {
+	if n.Port == 0 {
+		n.Port = 443
+	}
+	local, enabled, sub := 0, 1, 1
+	if n.IsLocal {
+		local = 1
+	}
+	if !n.Enabled {
+		enabled = 0
+	}
+	if !n.Subscribe {
+		sub = 0
+	}
+	var relay any
+	if n.RelayNodeID != nil && *n.RelayNodeID > 0 {
+		relay = *n.RelayNodeID
+	}
+	res, err := d.SQL.Exec(`INSERT INTO nodes (name, token, public_host, port, relay_node_id, relay_uuid, is_local, enabled, subscribe)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.Name, n.Token, n.PublicHost, n.Port, relay, n.RelayUUID, local, enabled, sub)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (d *DB) DeleteNode(id int64) error {
-	_, err := d.SQL.Exec(`DELETE FROM nodes WHERE id = ?`, id)
+func (d *DB) UpdateNode(n models.Node) error {
+	enabled, sub, local := 0, 0, 0
+	if n.Enabled {
+		enabled = 1
+	}
+	if n.Subscribe {
+		sub = 1
+	}
+	if n.IsLocal {
+		local = 1
+	}
+	var relay any
+	if n.RelayNodeID != nil && *n.RelayNodeID > 0 {
+		relay = *n.RelayNodeID
+	}
+	_, err := d.SQL.Exec(`UPDATE nodes SET name=?, public_host=?, port=?, relay_node_id=?, relay_uuid=?, is_local=?, enabled=?, subscribe=? WHERE id=?`,
+		n.Name, n.PublicHost, n.Port, relay, n.RelayUUID, local, enabled, sub, n.ID)
 	return err
 }
 
-func (d *DB) TouchNode(id int64, version, arch, host string) error {
-	_, err := d.SQL.Exec(`UPDATE nodes SET version=?, arch=?, host=?, last_seen=? WHERE id=?`,
-		version, arch, host, time.Now().UTC().Format(time.RFC3339), id)
+func (d *DB) DeleteNode(id int64) error {
+	n, err := d.GetNode(id)
+	if err != nil {
+		return err
+	}
+	if n.IsLocal {
+		return fmt.Errorf("本机节点不能删除")
+	}
+	_, err = d.SQL.Exec(`DELETE FROM nodes WHERE id = ?`, id)
 	return err
+}
+
+func (d *DB) TouchNode(id int64, version, arch, host string, xrayRunning bool, xrayMsg string) error {
+	run := 0
+	if xrayRunning {
+		run = 1
+	}
+	_, err := d.SQL.Exec(`UPDATE nodes SET version=?, arch=?, host=?, last_seen=?, xray_running=?, xray_message=? WHERE id=?`,
+		version, arch, host, time.Now().UTC().Format(time.RFC3339), run, xrayMsg, id)
+	return err
+}
+
+func (d *DB) SetNodeConfigRev(id int64, rev string) error {
+	_, err := d.SQL.Exec(`UPDATE nodes SET config_rev=? WHERE id=?`, rev, id)
+	return err
+}
+
+func (d *DB) BumpConfigRev() (string, error) {
+	rev := time.Now().UTC().Format("20060102150405")
+	_, err := d.SQL.Exec(`UPDATE nodes SET config_rev=?`, rev)
+	return rev, err
 }
 
 func (d *DB) SetNodeForce(id int64, desired string, force bool) error {

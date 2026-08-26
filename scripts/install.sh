@@ -194,6 +194,9 @@ install_xray() {
   if [ -f "$tmpdir/xray/xray" ]; then
     install -m 0755 "$tmpdir/xray/xray" /usr/local/bin/xray
     echo "已安装 /usr/local/bin/xray"
+    /usr/local/bin/xray version 2>/dev/null || true
+  else
+    echo "压缩包里没有 xray 可执行文件" >&2
   fi
 }
 

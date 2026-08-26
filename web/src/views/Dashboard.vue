@@ -23,7 +23,7 @@ async function reload() {
   busy.value = true
   try {
     const r = await api.reloadXray()
-    toastOk(r.message || (r.running ? 'Xray 已重载' : '配置已写入，Xray 未运行'))
+    toastOk(r.message || (r.running ? '本机 Xray 已重载' : '配置已写入，Xray 未运行'))
     await load()
   } catch (e) {
     toastErr(e)
@@ -35,15 +35,15 @@ async function reload() {
 
 <template>
   <div>
-    <div class="flex items-end justify-between mb-6">
+    <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
       <div>
         <h2 class="font-display text-3xl">总览</h2>
-        <p class="text-ink/50 text-sm mt-1">第 1 期：管理用户、套餐，并把启用中的用户写进本机 Xray。</p>
+        <p class="text-ink/50 text-sm mt-1">本机 Xray 由面板拉起；远程节点由 hallo-agent 拉配置并跑 Xray。订阅按节点公网地址出链。</p>
       </div>
-      <button class="btn-primary" :disabled="busy" @click="reload">{{ busy ? '重载中…' : '重载 Xray' }}</button>
+      <button class="btn-primary" :disabled="busy" @click="reload">{{ busy ? '重载中…' : '重载本机 Xray' }}</button>
     </div>
     <p v-if="error" class="text-red-700 text-sm mb-4">{{ error }}</p>
-    <div v-if="d" class="grid md:grid-cols-4 gap-4">
+    <div v-if="d" class="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
       <div class="card p-5">
         <div class="text-xs text-ink/45">用户</div>
         <div class="font-display text-3xl mt-2">{{ d.user_enabled }}/{{ d.user_total }}</div>
@@ -54,12 +54,17 @@ async function reload() {
         <div class="font-display text-3xl mt-2">{{ d.plan_total }}</div>
       </div>
       <div class="card p-5">
-        <div class="text-xs text-ink/45">累计流量</div>
-        <div class="font-display text-3xl mt-2">{{ formatBytes(d.traffic_total) }}</div>
-        <div class="text-xs text-ink/40 mt-1">第 2 期接 Stats 自动记账</div>
+        <div class="text-xs text-ink/45">节点</div>
+        <div class="font-display text-3xl mt-2">{{ d.node_online }}/{{ d.node_total }}</div>
+        <div class="text-xs text-ink/40 mt-1">在线 / 全部</div>
       </div>
       <div class="card p-5">
-        <div class="text-xs text-ink/45">Xray</div>
+        <div class="text-xs text-ink/45">累计流量</div>
+        <div class="font-display text-3xl mt-2">{{ formatBytes(d.traffic_total) }}</div>
+        <div class="text-xs text-ink/40 mt-1">精确 Stats 下一期</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-xs text-ink/45">本机 Xray</div>
         <div class="font-display text-2xl mt-2">{{ d.xray_running ? '运行中' : '未运行' }}</div>
         <div class="text-xs text-ink/40 mt-1">{{ d.xray_message }}</div>
         <div class="text-xs text-ink/40 mt-1">入站 :{{ d.inbound_port }}</div>

@@ -29,9 +29,27 @@ func PublicHost(publicURL, fallback string) string {
 	return fallback
 }
 
+type Endpoint struct {
+	Name       string
+	Host       string
+	Port       int
+	Flow       string
+	ServerName string
+	PublicKey  string
+	ShortID    string
+}
+
 func VLESSLink(host string, in models.Inbound, u models.User) string {
+	return VLESSLinkNamed(host, in, u, "")
+}
+
+func VLESSLinkNamed(host string, in models.Inbound, u models.User, nodeName string) string {
 	if host == "" {
 		host = "127.0.0.1"
+	}
+	port := in.Port
+	if port == 0 {
+		port = 443
 	}
 	sni := in.ServerName
 	if sni == "" {
@@ -48,50 +66,96 @@ func VLESSLink(host string, in models.Inbound, u models.User) string {
 	if in.Flow != "" {
 		q.Set("flow", in.Flow)
 	}
-	name := u.Email
-	if u.Remark != "" {
-		name = u.Remark
-	}
+	name := displayName(u, nodeName)
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s",
-		u.UUID, host, in.Port, q.Encode(), url.QueryEscape(name))
+		u.UUID, host, port, q.Encode(), url.QueryEscape(name))
+}
+
+func displayName(u models.User, nodeName string) string {
+	base := u.Email
+	if u.Remark != "" {
+		base = u.Remark
+	}
+	if nodeName != "" {
+		if base == "" {
+			return nodeName
+		}
+		return nodeName + " · " + base
+	}
+	return base
+}
+
+func LinksForEndpoints(eps []Endpoint, u models.User) []string {
+	var out []string
+	for _, ep := range eps {
+		in := models.Inbound{
+			Port:       ep.Port,
+			Flow:       ep.Flow,
+			ServerName: ep.ServerName,
+			PublicKey:  ep.PublicKey,
+			ShortID:    ep.ShortID,
+		}
+		out = append(out, VLESSLinkNamed(ep.Host, in, u, ep.Name))
+	}
+	return out
 }
 
 func ClashYAML(host string, in models.Inbound, u models.User) string {
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	sni := in.ServerName
-	if sni == "" {
-		sni = strings.Split(in.Dest, ":")[0]
-	}
-	name := u.Email
-	if u.Remark != "" {
-		name = u.Remark
+	return ClashYAMLMulti([]Endpoint{{
+		Name:       displayName(u, ""),
+		Host:       host,
+		Port:       in.Port,
+		Flow:       in.Flow,
+		ServerName: in.ServerName,
+		PublicKey:  in.PublicKey,
+		ShortID:    in.ShortID,
+	}}, u)
+}
+
+func ClashYAMLMulti(eps []Endpoint, u models.User) string {
+	if len(eps) == 0 {
+		return "proxies: []\nrules:\n  - MATCH,DIRECT\n"
 	}
 	var b strings.Builder
 	b.WriteString("mixed-port: 7890\n")
 	b.WriteString("allow-lan: false\n")
 	b.WriteString("mode: rule\n")
 	b.WriteString("proxies:\n")
-	b.WriteString("  - name: " + strconv.Quote(name) + "\n")
-	b.WriteString("    type: vless\n")
-	b.WriteString("    server: " + host + "\n")
-	b.WriteString("    port: " + strconv.Itoa(in.Port) + "\n")
-	b.WriteString("    uuid: " + u.UUID + "\n")
-	b.WriteString("    network: tcp\n")
-	b.WriteString("    tls: true\n")
-	b.WriteString("    udp: true\n")
-	b.WriteString("    flow: " + in.Flow + "\n")
-	b.WriteString("    servername: " + sni + "\n")
-	b.WriteString("    client-fingerprint: chrome\n")
-	b.WriteString("    reality-opts:\n")
-	b.WriteString("      public-key: " + in.PublicKey + "\n")
-	b.WriteString("      short-id: " + in.ShortID + "\n")
+	var names []string
+	for _, ep := range eps {
+		name := displayName(u, ep.Name)
+		names = append(names, name)
+		host := ep.Host
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		port := ep.Port
+		if port == 0 {
+			port = 443
+		}
+		sni := ep.ServerName
+		b.WriteString("  - name: " + strconv.Quote(name) + "\n")
+		b.WriteString("    type: vless\n")
+		b.WriteString("    server: " + host + "\n")
+		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+		b.WriteString("    uuid: " + u.UUID + "\n")
+		b.WriteString("    network: tcp\n")
+		b.WriteString("    tls: true\n")
+		b.WriteString("    udp: true\n")
+		b.WriteString("    flow: " + ep.Flow + "\n")
+		b.WriteString("    servername: " + sni + "\n")
+		b.WriteString("    client-fingerprint: chrome\n")
+		b.WriteString("    reality-opts:\n")
+		b.WriteString("      public-key: " + ep.PublicKey + "\n")
+		b.WriteString("      short-id: " + ep.ShortID + "\n")
+	}
 	b.WriteString("proxy-groups:\n")
 	b.WriteString("  - name: PROXY\n")
 	b.WriteString("    type: select\n")
 	b.WriteString("    proxies:\n")
-	b.WriteString("      - " + strconv.Quote(name) + "\n")
+	for _, name := range names {
+		b.WriteString("      - " + strconv.Quote(name) + "\n")
+	}
 	b.WriteString("rules:\n")
 	b.WriteString("  - MATCH,PROXY\n")
 	return b.String()
@@ -102,10 +166,14 @@ func Base64VLESS(host string, in models.Inbound, u models.User) string {
 	return base64.StdEncoding.EncodeToString([]byte(link + "\n"))
 }
 
+func Base64Links(links []string) string {
+	if len(links) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n") + "\n"))
+}
+
 func SubURL(publicURL, token string) string {
 	base := strings.TrimRight(publicURL, "/")
-	if base == "" {
-		base = ""
-	}
 	return base + "/sub/" + token
 }

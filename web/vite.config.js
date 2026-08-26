@@ -9,6 +9,8 @@ export default defineConfig({
     proxy: {
       '/api': 'http://127.0.0.1:18080',
       '/sub': 'http://127.0.0.1:18080',
+      '/install': 'http://127.0.0.1:18080',
+      '/download': 'http://127.0.0.1:18080',
     },
   },
   build: {

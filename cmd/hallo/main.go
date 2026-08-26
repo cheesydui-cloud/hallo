@@ -19,6 +19,7 @@ import (
 	"hallo/internal/config"
 	"hallo/internal/db"
 	"hallo/internal/models"
+	"hallo/internal/nodeconfig"
 	"hallo/internal/web"
 	"hallo/internal/xray"
 )
@@ -105,14 +106,19 @@ func serve(args []string) {
 	}
 	srv := api.New(cfg, database, xm, webFS, version)
 
+	if err := srv.RepairInbound(); err != nil {
+		log.Printf("修复入站密钥失败：%v", err)
+	}
 	in, err := database.GetInbound()
-	if err == nil && in.PrivateKey != "" && in.PrivateKey != "CHANGE_ME_PRIVATE" {
+	if err == nil && xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey) {
 		users, _ := database.ActiveUsers()
 		_ = xm.WriteConfig(*in, users)
-		if _, statErr := os.Stat(bin); statErr == nil {
+		if _, statErr := os.Stat(xm.Bin()); statErr == nil {
 			if err := xm.Reload(); err != nil {
 				log.Printf("启动 xray 失败：%v", err)
 			}
+		} else {
+			log.Printf("未找到 xray（%s），配置已写好，装好官方 Xray 后点入站页保存即可", xm.Bin())
 		}
 	}
 
@@ -251,13 +257,17 @@ func xrayCmd(args []string) {
 	if err != nil {
 		log.Fatal("尚未配置入站，请先打开面板完成初始化")
 	}
-	users, err := database.ActiveUsers()
+	local, err := database.LocalNode()
+	if err != nil {
+		log.Fatal("没有本机节点，请先打开面板完成初始化")
+	}
+	cfgMap, err := nodeconfig.Build(database, *local, *in)
 	if err != nil {
 		log.Fatal(err)
 	}
 	bin := database.GetSetting("xray_path", xray.DefaultBin(cfg.DataDir))
 	xm := xray.New(bin, cfg.XrayConfigPath())
-	if err := xm.WriteConfig(*in, users); err != nil {
+	if err := xm.WriteConfigBytes(cfgMap); err != nil {
 		log.Fatal(err)
 	}
 	if err := xm.Reload(); err != nil {

@@ -5,6 +5,7 @@ web:
 
 bin: web
 	go build -ldflags "-X main.version=dev" -o bin/hallo ./cmd/hallo
+	go build -ldflags "-X main.version=dev" -o bin/hallo-agent ./cmd/hallo-agent
 
 test:
 	go test ./...

@@ -12,7 +12,7 @@ const form = ref({
   username: 'admin',
   password: '',
   public_url: window.location.origin,
-  port: 18443,
+  port: 443,
 })
 
 onMounted(async () => {
@@ -75,7 +75,7 @@ async function submit() {
             <input class="input" v-model="form.public_url" placeholder="http://ip:18080" />
           </div>
           <div>
-            <label class="label">Xray 入站端口（开发机建议 18443）</label>
+            <label class="label">Xray 入站端口（生产用 443；本机开发可改 18443）</label>
             <input class="input" type="number" v-model.number="form.port" />
           </div>
         </template>

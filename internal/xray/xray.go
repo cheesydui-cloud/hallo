@@ -1,7 +1,9 @@
 package xray
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,11 +21,11 @@ import (
 )
 
 type Manager struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	bin    string
-	cfg    string
-	last   string
+	mu   sync.Mutex
+	cmd  *exec.Cmd
+	bin  string
+	cfg  string
+	last string
 }
 
 func New(bin, cfgPath string) *Manager {
@@ -71,15 +73,22 @@ func (m *Manager) Message() string {
 }
 
 func (m *Manager) WriteConfig(in models.Inbound, users []models.User) error {
+	return m.WriteConfigBytes(BuildConfig(in, users, nil))
+}
+
+func (m *Manager) WriteConfigBytes(cfg map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(m.cfg), 0o755); err != nil {
 		return err
 	}
-	cfg := buildConfig(in, users)
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(m.cfg, raw, 0o600)
+}
+
+func MarshalConfig(cfg map[string]any) ([]byte, error) {
+	return json.MarshalIndent(cfg, "", "  ")
 }
 
 func (m *Manager) Reload() error {
@@ -142,12 +151,6 @@ func (m *Manager) Stop() {
 }
 
 func DefaultBin(dataDir string) string {
-	if p := os.Getenv("HALLO_XRAY"); p != "" {
-		return p
-	}
-	if p, err := exec.LookPath("xray"); err == nil {
-		return p
-	}
 	name := "xray"
 	if runtime.GOOS == "windows" {
 		name = "xray.exe"
@@ -155,7 +158,44 @@ func DefaultBin(dataDir string) string {
 	if dataDir == "" {
 		dataDir = "data"
 	}
+	candidates := make([]string, 0, 8)
+	if p := os.Getenv("HALLO_XRAY"); p != "" {
+		candidates = append(candidates, p)
+	}
+	if p, err := exec.LookPath("xray"); err == nil {
+		candidates = append(candidates, p)
+	}
+	candidates = append(candidates,
+		"/usr/local/bin/xray",
+		"/usr/bin/xray",
+		filepath.Join(dataDir, "xray", name),
+	)
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	if p := os.Getenv("HALLO_XRAY"); p != "" {
+		return p
+	}
 	return filepath.Join(dataDir, "xray", name)
+}
+
+func IsPlaceholderKey(s string) bool {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "", "CHANGE_ME_PRIVATE", "CHANGE_ME_PUBLIC":
+		return true
+	}
+	return false
+}
+
+func ValidRealityKey(s string) bool {
+	if IsPlaceholderKey(s) {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(s))
+	return err == nil && len(raw) == 32
 }
 
 func GenerateRealityKeys(bin string) (priv, pub string, err error) {
@@ -164,15 +204,23 @@ func GenerateRealityKeys(bin string) (priv, pub string, err error) {
 			out, runErr := exec.Command(bin, "x25519").CombinedOutput()
 			if runErr == nil {
 				priv, pub = parseX25519(string(out))
-				if priv != "" && pub != "" {
+				if ValidRealityKey(priv) && ValidRealityKey(pub) {
 					return priv, pub, nil
 				}
 			}
 		}
 	}
-	// Fallback placeholder keys are invalid for real clients; operator should
-	// generate via `xray x25519` once the binary is present.
-	return "", "", fmt.Errorf("需要 xray 可执行文件来生成 Reality 密钥（xray x25519）")
+	return generateRealityKeysNative()
+}
+
+func generateRealityKeysNative() (priv, pub string, err error) {
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("生成 Reality 密钥失败：%w", err)
+	}
+	priv = base64.RawURLEncoding.EncodeToString(key.Bytes())
+	pub = base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())
+	return priv, pub, nil
 }
 
 func parseX25519(out string) (priv, pub string) {
@@ -195,7 +243,17 @@ func RandomShortID() string {
 	return hex.EncodeToString(b)
 }
 
-func buildConfig(in models.Inbound, users []models.User) map[string]any {
+type Relay struct {
+	Address    string
+	Port       int
+	UUID       string
+	Flow       string
+	PublicKey  string
+	ShortID    string
+	ServerName string
+}
+
+func BuildConfig(in models.Inbound, users []models.User, relay *Relay) map[string]any {
 	clients := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		c := map[string]any{
@@ -223,10 +281,61 @@ func buildConfig(in models.Inbound, users []models.User) map[string]any {
 	if sni == "" {
 		sni = strings.Split(dest, ":")[0]
 	}
+	outbounds := []any{
+		map[string]any{"protocol": "freedom", "tag": "direct"},
+		map[string]any{"protocol": "blackhole", "tag": "block"},
+	}
+	routing := map[string]any{
+		"domainStrategy": "AsIs",
+		"rules": []any{
+			map[string]any{"type": "field", "inboundTag": []string{"vless-in"}, "outboundTag": "direct"},
+		},
+	}
+	if relay != nil && relay.Address != "" && relay.UUID != "" && relay.Port > 0 {
+		rsni := relay.ServerName
+		if rsni == "" {
+			rsni = sni
+		}
+		vnext := map[string]any{
+			"address": relay.Address,
+			"port":    relay.Port,
+			"users": []any{
+				map[string]any{
+					"id":         relay.UUID,
+					"encryption": "none",
+					"flow":       firstNonEmpty(relay.Flow, in.Flow),
+				},
+			},
+		}
+		outbounds = append([]any{
+			map[string]any{
+				"tag":      "relay",
+				"protocol": "vless",
+				"settings": map[string]any{"vnext": []any{vnext}},
+				"streamSettings": map[string]any{
+					"network":  "tcp",
+					"security": "reality",
+					"realitySettings": map[string]any{
+						"serverName":  rsni,
+						"fingerprint": "chrome",
+						"publicKey":   relay.PublicKey,
+						"shortId":     relay.ShortID,
+					},
+				},
+			},
+		}, outbounds...)
+		routing = map[string]any{
+			"domainStrategy": "AsIs",
+			"rules": []any{
+				map[string]any{"type": "field", "inboundTag": []string{"vless-in"}, "outboundTag": "relay"},
+			},
+		}
+	}
 	return map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
 		"inbounds": []any{
 			map[string]any{
+				"tag":      "vless-in",
 				"listen":   listen,
 				"port":     port,
 				"protocol": "vless",
@@ -252,11 +361,16 @@ func buildConfig(in models.Inbound, users []models.User) map[string]any {
 				},
 			},
 		},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom", "tag": "direct"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
+		"outbounds": outbounds,
+		"routing":   routing,
 	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 func ParseLimitBytes(s string) (int64, error) {
