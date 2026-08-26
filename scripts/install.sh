@@ -1,11 +1,11 @@
 #!/bin/sh
 # Hallo 一键安装 / 升级（Linux systemd）
 # 安装：
-#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh
+#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh
 # 指定版本：
-#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --version v0.1.0
-# 升级（只换二进制，保留 /etc/hallo 与数据库）：
-#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --upgrade
+#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.1.0
+# 升级（只换二进制；若尚未安装服务则自动改走完整安装）：
+#   curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade
 # 可选：
 #   --listen :18080 --public-url http://IP:18080 --skip-xray
 set -eu
@@ -18,6 +18,7 @@ LISTEN=":18080"
 PUBLIC_URL=""
 SKIP_XRAY=0
 XRAY_VERSION="${HALLO_XRAY_VERSION:-}"
+UNIT=/etc/systemd/system/hallo.service
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -31,11 +32,11 @@ while [ $# -gt 0 ]; do
       cat <<'EOF'
 Hallo 一键安装 / 升级（Linux systemd）
 
-  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh
-  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --version v0.1.0
-  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --upgrade
+  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.1.0
+  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade
 
-可选：--listen :18080 --public-url http://IP:18080 --skip-xray
+已经是 root 时不要再套一层 sudo。可选：--listen :18080 --public-url http://IP:18080 --skip-xray
 EOF
       exit 0
       ;;
@@ -47,7 +48,8 @@ EOF
 done
 
 if [ "$(id -u)" != "0" ]; then
-  echo "请用 root 运行，例如：curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh" >&2
+  echo "请用 root 运行：" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh" >&2
   exit 1
 fi
 
@@ -70,6 +72,40 @@ need_cmd() {
     echo "缺少命令：$1" >&2
     exit 1
   fi
+}
+
+ensure_unzip() {
+  if command -v unzip >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y unzip >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y unzip >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache unzip >/dev/null 2>&1 || true
+  fi
+}
+
+extract_zip() {
+  zipfile=$1
+  dest=$2
+  mkdir -p "$dest"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -qo "$zipfile" -d "$dest"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$zipfile" "$dest" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+    return 0
+  fi
+  return 1
 }
 
 need_cmd curl
@@ -107,7 +143,7 @@ if [ ! -x "$tmpdir/hallo" ]; then
   echo "压缩包里没有 hallo 二进制" >&2
   exit 1
 fi
-	install -m 0755 "$tmpdir/hallo" /usr/local/bin/hallo
+install -m 0755 "$tmpdir/hallo" /usr/local/bin/hallo
 
 stage_agents() {
   mkdir -p /var/lib/hallo/agents
@@ -128,7 +164,7 @@ stage_agents() {
   done
 }
 
-	install_xray() {
+install_xray() {
   if [ "$SKIP_XRAY" = 1 ]; then
     echo "跳过 Xray（--skip-xray）"
     return 0
@@ -146,15 +182,15 @@ stage_agents() {
   zip="Xray-linux-${xray_arch}.zip"
   xurl="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${zip}"
   echo "下载 Xray ${XRAY_VERSION} $xurl"
-  if ! command -v unzip >/dev/null 2>&1; then
-    echo "没有 unzip，跳过 Xray 安装。请手动安装官方 Xray-core。" >&2
-    return 0
-  fi
   if ! curl -fL --connect-timeout 15 --max-time 300 -o "$tmpdir/$zip" "$xurl"; then
     echo "下载 Xray 失败，跳过。面板仍可打开，之后在设置里填写 xray 路径。" >&2
     return 0
   fi
-  unzip -qo "$tmpdir/$zip" -d "$tmpdir/xray"
+  ensure_unzip
+  if ! extract_zip "$tmpdir/$zip" "$tmpdir/xray"; then
+    echo "没有 unzip / python3，跳过 Xray 安装。可：apt-get install -y unzip 后重跑脚本。" >&2
+    return 0
+  fi
   if [ -f "$tmpdir/xray/xray" ]; then
     install -m 0755 "$tmpdir/xray/xray" /usr/local/bin/xray
     echo "已安装 /usr/local/bin/xray"
@@ -164,6 +200,10 @@ stage_agents() {
 write_env() {
   mkdir -p /etc/hallo /var/lib/hallo
   chmod 0750 /var/lib/hallo
+  if [ -f /etc/hallo/hallo.env ]; then
+    echo "保留已有 /etc/hallo/hallo.env"
+    return 0
+  fi
   {
     printf 'HALLO_LISTEN=%s\n' "$LISTEN"
     printf 'HALLO_DATA=/var/lib/hallo\n'
@@ -174,7 +214,7 @@ write_env() {
 }
 
 write_unit() {
-  cat >/etc/systemd/system/hallo.service <<'UNIT'
+  cat >"$UNIT" <<'UNIT'
 [Unit]
 Description=Hallo panel
 After=network-online.target
@@ -193,12 +233,17 @@ WantedBy=multi-user.target
 UNIT
 }
 
-	install_xray
-	stage_agents
+install_xray
+stage_agents
 
-	if [ "$UPGRADE" = 1 ]; then
-	  systemctl daemon-reload
-	  systemctl restart hallo.service
+if [ "$UPGRADE" = 1 ] && [ ! -f "$UNIT" ]; then
+  echo "未找到 $UNIT，按首次安装写入服务。"
+  UPGRADE=0
+fi
+
+if [ "$UPGRADE" = 1 ]; then
+  systemctl daemon-reload
+  systemctl restart hallo.service
   echo "Hallo 已升级到 ${VERSION} 并重启（配置与数据库未改）"
   echo "版本：$(/usr/local/bin/hallo version 2>/dev/null || echo "$VERSION")"
   exit 0
@@ -227,7 +272,7 @@ echo "浏览器打开 http://服务器IP${LISTEN} 创建管理员。"
 echo "生产环境请在前面挂 HTTPS，并把设置里的公网地址改成 https://域名"
 echo ""
 echo "升级："
-echo "  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --upgrade"
+echo "  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade"
 echo "给管理员加不限量套餐："
 echo "  hallo plan add --name admin --limit 0 --days 0 --note \"admin自用\""
 echo "  hallo user add --email admin --plan admin --remark \"自己用\""
