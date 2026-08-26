@@ -55,6 +55,22 @@ type Settings struct {
 	Listen    string `json:"listen"`
 	XrayPath  string `json:"xray_path"`
 	PanelHost string `json:"panel_host"`
+	Version   string `json:"version"`
+	Repo      string `json:"repo"`
+}
+
+type Node struct {
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Token       string     `json:"token"`
+	Arch        string     `json:"arch"`
+	Host        string     `json:"host"`
+	Version     string     `json:"version"`
+	DesiredVer  string     `json:"desired_version"`
+	ForceUpdate bool       `json:"force_update"`
+	LastSeen    *time.Time `json:"last_seen"`
+	Online      bool       `json:"online"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type Dashboard struct {

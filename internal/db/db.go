@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  arch TEXT NOT NULL DEFAULT '',
+  host TEXT NOT NULL DEFAULT '',
+  version TEXT NOT NULL DEFAULT '',
+  desired_version TEXT NOT NULL DEFAULT '',
+  force_update INTEGER NOT NULL DEFAULT 0,
+  last_seen DATETIME,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `)
 	return err
 }
@@ -390,6 +402,100 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}
 	_, err = d.SQL.Exec(`UPDATE inbounds SET protocol=?, listen=?, port=?, flow=?, dest=?, server_name=?, private_key=?, public_key=?, short_id=? WHERE id=?`,
 		in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, cur.ID)
+	return err
+}
+
+func scanNode(s scanner) (models.Node, error) {
+	var n models.Node
+	var last sql.NullString
+	var force int
+	err := s.Scan(&n.ID, &n.Name, &n.Token, &n.Arch, &n.Host, &n.Version, &n.DesiredVer, &force, &last, &n.CreatedAt)
+	if err != nil {
+		return n, err
+	}
+	n.ForceUpdate = force != 0
+	if last.Valid && last.String != "" {
+		if t, err := parseTime(last.String); err == nil {
+			n.LastSeen = &t
+			n.Online = time.Since(t) < 90*time.Second
+		}
+	}
+	return n, nil
+}
+
+func (d *DB) ListNodes() ([]models.Node, error) {
+	rows, err := d.SQL.Query(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Node
+	for rows.Next() {
+		n, err := scanNode(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	if out == nil {
+		out = []models.Node{}
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) GetNode(id int64) (*models.Node, error) {
+	row := d.SQL.QueryRow(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes WHERE id = ?`, id)
+	n, err := scanNode(row)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (d *DB) GetNodeByToken(token string) (*models.Node, error) {
+	row := d.SQL.QueryRow(`SELECT id, name, token, arch, host, version, desired_version, force_update, last_seen, created_at FROM nodes WHERE token = ?`, token)
+	n, err := scanNode(row)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (d *DB) CreateNode(name, token string) (int64, error) {
+	res, err := d.SQL.Exec(`INSERT INTO nodes (name, token) VALUES (?, ?)`, name, token)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (d *DB) DeleteNode(id int64) error {
+	_, err := d.SQL.Exec(`DELETE FROM nodes WHERE id = ?`, id)
+	return err
+}
+
+func (d *DB) TouchNode(id int64, version, arch, host string) error {
+	_, err := d.SQL.Exec(`UPDATE nodes SET version=?, arch=?, host=?, last_seen=? WHERE id=?`,
+		version, arch, host, time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (d *DB) SetNodeForce(id int64, desired string, force bool) error {
+	v := 0
+	if force {
+		v = 1
+	}
+	_, err := d.SQL.Exec(`UPDATE nodes SET desired_version=?, force_update=? WHERE id=?`, desired, v, id)
+	return err
+}
+
+func (d *DB) ClearNodeForce(id int64) error {
+	_, err := d.SQL.Exec(`UPDATE nodes SET force_update=0 WHERE id=?`, id)
+	return err
+}
+
+func (d *DB) SetAllNodesForce(desired string) error {
+	_, err := d.SQL.Exec(`UPDATE nodes SET desired_version=?, force_update=1`, desired)
 	return err
 }
 

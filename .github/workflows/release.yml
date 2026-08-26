@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build assets
+        run: sh scripts/release.sh "${GITHUB_REF_NAME}"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/release/${{ github.ref_name }}/hallo-linux-amd64.tar.gz
+            dist/release/${{ github.ref_name }}/hallo-linux-amd64.tar.gz.sha256
+            dist/release/${{ github.ref_name }}/hallo-linux-arm64.tar.gz
+            dist/release/${{ github.ref_name }}/hallo-linux-arm64.tar.gz.sha256
+            dist/release/${{ github.ref_name }}/hallo-agent-linux-amd64.tar.gz
+            dist/release/${{ github.ref_name }}/hallo-agent-linux-amd64.tar.gz.sha256
+            dist/release/${{ github.ref_name }}/hallo-agent-linux-arm64.tar.gz
+            dist/release/${{ github.ref_name }}/hallo-agent-linux-arm64.tar.gz.sha256
+            dist/release/${{ github.ref_name }}/install.sh
+          body: |
+            ## 一键安装（Linux，root + systemd）
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh
+            ```
+
+            指定本版本：
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --version ${{ github.ref_name }}
+            ```
+
+            装完打开 `http://服务器IP:18080` 创建管理员。
+
+            ### 面板更新（推荐）
+
+            打开 **设置 → 检查更新 → 一键更新面板**。面板会从本仓库 GitHub Release 拉包、换二进制并重启。
+
+            命令行升级（保留数据和配置）：
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sudo sh -s -- --upgrade
+            ```
+
+            ### Agent 更新
+
+            打开 **节点 → 推送更新**（或「一键推送全部 Agent」）。节点下次心跳从面板 `/download/agent/<arch>` 拉新包并重启。
+
+            给管理员加不限量套餐：
+
+            ```bash
+            hallo plan add --name admin --limit 0 --days 0 --note "admin自用"
+            hallo user add --email admin --plan admin --remark "自己用"
+            ```

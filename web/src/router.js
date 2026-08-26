@@ -6,6 +6,7 @@ import Users from './views/Users.vue'
 import Plans from './views/Plans.vue'
 import Inbound from './views/Inbound.vue'
 import Settings from './views/Settings.vue'
+import Nodes from './views/Nodes.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -19,6 +20,7 @@ const router = createRouter({
         { path: 'users', component: Users },
         { path: 'plans', component: Plans },
         { path: 'inbound', component: Inbound },
+        { path: 'nodes', component: Nodes },
         { path: 'settings', component: Settings },
       ],
     },

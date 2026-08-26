@@ -12,6 +12,7 @@ const nav = [
   { to: '/users', label: '用户' },
   { to: '/plans', label: '套餐' },
   { to: '/inbound', label: '入站' },
+  { to: '/nodes', label: '节点' },
   { to: '/settings', label: '设置' },
 ]
 

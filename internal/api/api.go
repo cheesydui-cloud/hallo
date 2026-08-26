@@ -9,31 +9,37 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
+	"hallo/internal/agentproto"
 	"hallo/internal/auth"
 	"hallo/internal/config"
 	"hallo/internal/db"
 	"hallo/internal/models"
 	"hallo/internal/sub"
+	"hallo/internal/update"
 	"hallo/internal/xray"
 )
 
 type Server struct {
-	cfg  config.Config
-	db   *db.DB
-	xray *xray.Manager
-	web  fs.FS
+	cfg     config.Config
+	db      *db.DB
+	xray    *xray.Manager
+	web     fs.FS
+	version string
+	upMu    sync.Mutex
 }
 
-func New(cfg config.Config, database *db.DB, xm *xray.Manager, webFS fs.FS) *Server {
-	return &Server{cfg: cfg, db: database, xray: xm, web: webFS}
+func New(cfg config.Config, database *db.DB, xm *xray.Manager, webFS fs.FS, version string) *Server {
+	return &Server{cfg: cfg, db: database, xray: xm, web: webFS, version: version}
 }
 
 func (s *Server) Router() http.Handler {
@@ -41,7 +47,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(middleware.Timeout(5 * time.Minute))
 
 	r.Get("/api/meta", s.meta)
 	r.Post("/api/setup", s.setup)
@@ -50,6 +56,8 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/sub/{token}", s.subscription)
 	r.Get("/sub/{token}/clash", s.subscriptionClash)
+	r.Post("/api/agent/heartbeat", s.agentHeartbeat)
+	r.Get("/download/agent/{arch}", s.downloadAgent)
 
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
@@ -70,6 +78,13 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/xray/reload", s.reloadXray)
 		r.Get("/api/settings", s.getSettings)
 		r.Put("/api/settings", s.putSettings)
+		r.Get("/api/update", s.updateStatus)
+		r.Post("/api/update", s.applyPanelUpdate)
+		r.Get("/api/nodes", s.listNodes)
+		r.Post("/api/nodes", s.createNode)
+		r.Delete("/api/nodes/{id}", s.deleteNode)
+		r.Post("/api/nodes/{id}/push-update", s.pushNodeUpdate)
+		r.Post("/api/nodes/push-update", s.pushAllNodeUpdates)
 	})
 
 	if s.web != nil {
@@ -161,6 +176,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"setup_needed": n == 0,
 		"name":         "Hallo",
+		"version":      s.version,
 	})
 }
 
@@ -652,10 +668,12 @@ func (s *Server) reloadXray(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, models.Settings{
-		PublicURL: s.db.GetSetting("public_url", ""),
+		PublicURL: s.db.GetSetting("public_url", s.cfg.PublicURL),
 		Listen:    s.db.GetSetting("listen", s.cfg.Listen),
 		XrayPath:  s.db.GetSetting("xray_path", s.xray.Bin()),
 		PanelHost: r.Host,
+		Version:   s.version,
+		Repo:      update.DefaultRepo,
 	})
 }
 
@@ -744,4 +762,314 @@ func parseID(s string) (int64, error) {
 
 func (s *Server) SeedInboundIfNeeded() error {
 	return s.ensureInbound(0)
+}
+
+func (s *Server) repo() string {
+	if v := s.db.GetSetting("release_repo", ""); v != "" {
+		return v
+	}
+	return update.DefaultRepo
+}
+
+func (s *Server) agentDir() string {
+	return filepath.Join(s.cfg.DataDir, "agents")
+}
+
+func (s *Server) stagedAgents() map[string]string {
+	out := map[string]string{}
+	for _, arch := range []string{"amd64", "arm64"} {
+		p := filepath.Join(s.agentDir(), "hallo-agent-linux-"+arch)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			out[arch] = p
+		}
+	}
+	return out
+}
+
+func (s *Server) updateStatus(w http.ResponseWriter, r *http.Request) {
+	rel, err := update.FetchLatest(s.repo())
+	if err != nil {
+		writeErr(w, 502, "拉取 GitHub 失败："+err.Error())
+		return
+	}
+	asset := update.AssetName("panel", "linux", update.Arch())
+	st := update.Status{
+		Current:     s.version,
+		Latest:      rel.Tag,
+		Newer:       update.Newer(rel.Tag, s.version),
+		HTMLURL:     rel.HTMLURL,
+		Repo:        s.repo(),
+		Arch:        update.Arch(),
+		Asset:       asset,
+		AgentStaged: s.stagedAgents(),
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *Server) applyPanelUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.upMu.TryLock() {
+		writeErr(w, 409, "已有更新在进行")
+		return
+	}
+	defer s.upMu.Unlock()
+
+	rel, err := update.FetchLatest(s.repo())
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	if !update.Newer(rel.Tag, s.version) {
+		writeJSON(w, 200, map[string]any{"ok": true, "message": "已是最新 " + s.version, "latest": rel.Tag})
+		return
+	}
+	assetName := update.AssetName("panel", "linux", update.Arch())
+	asset, err := update.FindAsset(rel, assetName)
+	if err != nil {
+		writeErr(w, 400, err.Error()+"。当前架构需要 Linux 发行包，macOS 开发机请用 git pull / 重新编译。")
+		return
+	}
+	dir, err := os.MkdirTemp("", "hallo-up-*")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer os.RemoveAll(dir)
+	tgz := filepath.Join(dir, assetName)
+	if err := update.Download(asset.URL, tgz); err != nil {
+		writeErr(w, 502, "下载失败："+err.Error())
+		return
+	}
+	bin := filepath.Join(dir, "hallo")
+	if err := update.ExtractFile(tgz, "hallo", bin); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	self, err := update.SelfPath()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := update.ReplaceExec(bin, self); err != nil {
+		writeErr(w, 500, "写入二进制失败："+err.Error())
+		return
+	}
+	if err := s.stageAgentsFromRelease(rel); err != nil {
+		writeJSON(w, 200, map[string]any{
+			"ok":      true,
+			"version": rel.Tag,
+			"warning": "面板已更新，暂存 agent 失败：" + err.Error(),
+		})
+	} else {
+		writeJSON(w, 200, map[string]any{"ok": true, "version": rel.Tag, "restarting": true})
+	}
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		if err := update.RestartPanel(); err != nil {
+			os.Exit(0)
+		}
+	}()
+}
+
+func (s *Server) stageAgentsFromRelease(rel *update.Release) error {
+	dir := s.agentDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "hallo-agent-stage-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	var last error
+	ok := 0
+	for _, arch := range []string{"amd64", "arm64"} {
+		name := update.AssetName("agent", "linux", arch)
+		asset, err := update.FindAsset(rel, name)
+		if err != nil {
+			last = err
+			continue
+		}
+		tgz := filepath.Join(tmp, name)
+		if err := update.Download(asset.URL, tgz); err != nil {
+			last = err
+			continue
+		}
+		dest := filepath.Join(dir, "hallo-agent-linux-"+arch)
+		if err := update.ExtractFile(tgz, "hallo-agent", dest); err != nil {
+			last = err
+			continue
+		}
+		ok++
+	}
+	if ok == 0 {
+		if last != nil {
+			return last
+		}
+		return errors.New("没有可用的 agent 附件")
+	}
+	return nil
+}
+
+func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
+	items, err := s.db.ListNodes()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "panel_version": s.version, "agent_staged": s.stagedAgents()})
+}
+
+func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeErr(w, 400, "节点名不能为空")
+		return
+	}
+	tok, err := auth.RandomToken(24)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	id, err := s.db.CreateNode(body.Name, tok)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	n, err := s.db.GetNode(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	pub := s.publicBase(r)
+	archCmd := `$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')`
+	install := "curl -fsSL " + pub + "/download/agent/" + archCmd + " -o /usr/local/bin/hallo-agent && chmod +x /usr/local/bin/hallo-agent && hallo-agent run --panel " + pub + " --node-id " + strconv.FormatInt(n.ID, 10) + " --token " + n.Token
+	writeJSON(w, 200, map[string]any{"node": n, "install_hint": install, "panel": pub})
+}
+
+func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	if err := s.db.DeleteNode(id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (s *Server) pushNodeUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	n, err := s.db.GetNode(id)
+	if err != nil {
+		writeErr(w, 404, "节点不存在")
+		return
+	}
+	ver := s.desiredAgentVersion()
+	if err := s.db.SetNodeForce(n.ID, ver, true); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "desired_version": ver, "message": "已标记推送，节点下次心跳会从面板拉包"})
+}
+
+func (s *Server) pushAllNodeUpdates(w http.ResponseWriter, r *http.Request) {
+	ver := s.desiredAgentVersion()
+	if err := s.db.SetAllNodesForce(ver); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "desired_version": ver})
+}
+
+func (s *Server) desiredAgentVersion() string {
+	if s.version != "" && s.version != "dev" {
+		return s.version
+	}
+	return "latest"
+}
+
+func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	var hb agentproto.Heartbeat
+	if err := readJSON(r, &hb); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	n, err := s.db.GetNodeByToken(strings.TrimSpace(hb.Token))
+	if err != nil {
+		writeErr(w, 401, "无效 token")
+		return
+	}
+	_ = s.db.TouchNode(n.ID, hb.Version, hb.Arch, hb.Host)
+	if n.ForceUpdate && hb.Version != "" && n.DesiredVer != "" && n.DesiredVer != "latest" && !update.Newer(n.DesiredVer, hb.Version) {
+		_ = s.db.ClearNodeForce(n.ID)
+		n.ForceUpdate = false
+	}
+	pub := strings.TrimRight(s.db.GetSetting("public_url", ""), "/")
+	arch := hb.Arch
+	if arch == "" {
+		arch = n.Arch
+	}
+	if arch == "x86_64" {
+		arch = "amd64"
+	}
+	if arch == "aarch64" {
+		arch = "arm64"
+	}
+	reply := agentproto.HeartbeatReply{
+		OK:           true,
+		PanelVersion: s.version,
+		DesiredVer:   n.DesiredVer,
+		ForceUpdate:  n.ForceUpdate,
+	}
+	if n.ForceUpdate && pub != "" && arch != "" {
+		reply.UpdateURL = pub + "/download/agent/" + arch
+	}
+	writeJSON(w, 200, reply)
+}
+
+func (s *Server) downloadAgent(w http.ResponseWriter, r *http.Request) {
+	arch := chi.URLParam(r, "arch")
+	switch arch {
+	case "x86_64":
+		arch = "amd64"
+	case "aarch64":
+		arch = "arm64"
+	}
+	if arch != "amd64" && arch != "arm64" {
+		http.Error(w, "unsupported arch", http.StatusNotFound)
+		return
+	}
+	p := filepath.Join(s.agentDir(), "hallo-agent-linux-"+arch)
+	if _, err := os.Stat(p); err != nil {
+		http.Error(w, "agent 尚未暂存，请先在设置里点更新，或把 hallo-agent 放到 "+p, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="hallo-agent"`)
+	http.ServeFile(w, r, p)
+}
+
+func (s *Server) publicBase(r *http.Request) string {
+	pub := strings.TrimRight(s.db.GetSetting("public_url", ""), "/")
+	if pub != "" {
+		return pub
+	}
+	scheme := "http"
+	if s.cookieSecure(r) {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
 }

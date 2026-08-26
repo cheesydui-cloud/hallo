@@ -23,6 +23,9 @@ import (
 	"hallo/internal/xray"
 )
 
+// version is set at release build time: -ldflags "-X main.version=v0.1.0"
+var version = "dev"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("hallo ")
@@ -39,6 +42,8 @@ func main() {
 		userCmd(os.Args[2:])
 	case "xray":
 		xrayCmd(os.Args[2:])
+	case "version", "-v", "--version":
+		fmt.Println(version)
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -49,7 +54,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Hallo 面板（第 1 期：单节点 + Xray）
+	fmt.Fprintf(os.Stderr, `Hallo 面板 %s（第 1 期：单节点 + Xray）
 
 用法：
   hallo serve [--listen :18080] [--data data]
@@ -58,13 +63,14 @@ func usage() {
   hallo user add --email ID [--plan NAME] [--remark TEXT]
   hallo user list
   hallo xray reload
+  hallo version
 
 环境变量：
   HALLO_LISTEN  面板监听地址（默认 :18080）
   HALLO_DATA    数据目录（默认 ./data）
   HALLO_XRAY    xray 可执行文件路径
   HALLO_DEV=1   开发模式（默认入站端口 18443）
-`)
+`, version)
 }
 
 func openDB(cfg config.Config) *db.DB {
@@ -85,8 +91,11 @@ func serve(args []string) {
 	fs.StringVar(&cfg.DataDir, "data", cfg.DataDir, "数据目录")
 	_ = fs.Parse(args)
 
-		database := openDB(cfg)
+	database := openDB(cfg)
 	defer database.Close()
+	if cfg.PublicURL != "" && database.GetSetting("public_url", "") == "" {
+		_ = database.SetSetting("public_url", cfg.PublicURL)
+	}
 
 	bin := database.GetSetting("xray_path", xray.DefaultBin(cfg.DataDir))
 	xm := xray.New(bin, cfg.XrayConfigPath())
@@ -94,7 +103,7 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := api.New(cfg, database, xm, webFS)
+	srv := api.New(cfg, database, xm, webFS, version)
 
 	in, err := database.GetInbound()
 	if err == nil && in.PrivateKey != "" && in.PrivateKey != "CHANGE_ME_PRIVATE" {

@@ -6,24 +6,30 @@ import (
 )
 
 type Config struct {
-	Listen  string
-	DataDir string
-	Dev     bool
+	Listen    string
+	DataDir   string
+	Dev       bool
+	PublicURL string
 }
 
 func Default() Config {
 	data := os.Getenv("HALLO_DATA")
 	if data == "" {
-		data = "data"
+		if _, err := os.Stat("/var/lib/hallo"); err == nil {
+			data = "/var/lib/hallo"
+		} else {
+			data = "data"
+		}
 	}
 	listen := os.Getenv("HALLO_LISTEN")
 	if listen == "" {
 		listen = ":18080"
 	}
 	return Config{
-		Listen:  listen,
-		DataDir: data,
-		Dev:     os.Getenv("HALLO_DEV") == "1",
+		Listen:    listen,
+		DataDir:   data,
+		Dev:       os.Getenv("HALLO_DEV") == "1",
+		PublicURL: os.Getenv("HALLO_PUBLIC_URL"),
 	}
 }
 

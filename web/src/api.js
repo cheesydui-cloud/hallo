@@ -40,6 +40,13 @@ export const api = {
   reloadXray: () => request('/api/xray/reload', { method: 'POST', body: {} }),
   settings: () => request('/api/settings'),
   saveSettings: (body) => request('/api/settings', { method: 'PUT', body }),
+  updateStatus: () => request('/api/update'),
+  applyUpdate: () => request('/api/update', { method: 'POST', body: {} }),
+  nodes: () => request('/api/nodes'),
+  createNode: (body) => request('/api/nodes', { method: 'POST', body }),
+  deleteNode: (id) => request(`/api/nodes/${id}`, { method: 'DELETE' }),
+  pushNodeUpdate: (id) => request(`/api/nodes/${id}/push-update`, { method: 'POST', body: {} }),
+  pushAllNodeUpdates: () => request('/api/nodes/push-update', { method: 'POST', body: {} }),
 }
 
 export function formatBytes(n) {
