@@ -135,7 +135,7 @@ function nodeLabel(ids) {
 <template>
   <div>
     <h2 class="text-xl font-semibold mb-2">客户端</h2>
-    <p class="text-black/45 text-sm mb-6">先加一个用户，再复制订阅。没有用户，节点里就没有 UUID，VLESS 一定连不上。不选服务器 = 订阅含全部启用机器。</p>
+    <p class="text-black/45 text-sm mb-6">先加一个用户，再复制订阅。没有用户，VLESS/VMess 就没有 UUID。不选服务器 = 订阅含全部启用机器上的全部协议。</p>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
     <form class="card p-5 mb-6 grid md:grid-cols-5 gap-3 items-end" @submit.prevent="create">

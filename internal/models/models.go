@@ -47,15 +47,18 @@ type Inbound struct {
 	NodeID     int64  `json:"node_id"`
 	Remark     string `json:"remark"`
 	Tag        string `json:"tag"`
-	Protocol   string `json:"protocol"`
+	Protocol   string `json:"protocol"` // vless / vmess / shadowsocks
 	Listen     string `json:"listen"`
 	Port       int    `json:"port"`
 	Flow       string `json:"flow"`
+	Security   string `json:"security"` // reality / none
 	Dest       string `json:"dest"`
 	ServerName string `json:"server_name"`
 	PrivateKey string `json:"private_key"`
 	PublicKey  string `json:"public_key"`
 	ShortID    string `json:"short_id"`
+	Method     string `json:"method"`
+	Password   string `json:"password"`
 	Enabled    bool   `json:"enabled"`
 	NodeName   string `json:"node_name,omitempty"`
 	ClientNum  int    `json:"client_num,omitempty"`

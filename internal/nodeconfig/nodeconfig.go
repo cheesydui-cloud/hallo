@@ -183,10 +183,14 @@ func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost s
 				Name:       name,
 				Host:       host,
 				Port:       port,
+				Protocol:   firstNonEmpty(ib.Protocol, "vless"),
 				Flow:       firstNonEmpty(ib.Flow, in.Flow),
+				Security:   ib.Security,
 				ServerName: firstNonEmpty(ib.ServerName, in.ServerName),
 				PublicKey:  firstNonEmpty(ib.PublicKey, in.PublicKey),
 				ShortID:    firstNonEmpty(ib.ShortID, in.ShortID),
+				Method:     ib.Method,
+				Password:   ib.Password,
 			})
 		}
 	}

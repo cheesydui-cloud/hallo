@@ -2,6 +2,7 @@ package sub
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -33,42 +34,110 @@ type Endpoint struct {
 	Name       string
 	Host       string
 	Port       int
+	Protocol   string
 	Flow       string
+	Security   string
 	ServerName string
 	PublicKey  string
 	ShortID    string
+	Method     string
+	Password   string
 }
 
 func VLESSLink(host string, in models.Inbound, u models.User) string {
-	return VLESSLinkNamed(host, in, u, "")
+	return ShareLink(Endpoint{
+		Host:       host,
+		Port:       in.Port,
+		Protocol:   firstNonEmpty(in.Protocol, "vless"),
+		Flow:       in.Flow,
+		Security:   in.Security,
+		ServerName: in.ServerName,
+		PublicKey:  in.PublicKey,
+		ShortID:    in.ShortID,
+		Method:     in.Method,
+		Password:   in.Password,
+	}, u, "")
 }
 
 func VLESSLinkNamed(host string, in models.Inbound, u models.User, nodeName string) string {
+	return ShareLink(Endpoint{
+		Name:       nodeName,
+		Host:       host,
+		Port:       in.Port,
+		Protocol:   firstNonEmpty(in.Protocol, "vless"),
+		Flow:       in.Flow,
+		Security:   in.Security,
+		ServerName: in.ServerName,
+		PublicKey:  in.PublicKey,
+		ShortID:    in.ShortID,
+		Method:     in.Method,
+		Password:   in.Password,
+	}, u, nodeName)
+}
+
+func ShareLink(ep Endpoint, u models.User, nodeName string) string {
+	host := ep.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	port := in.Port
+	port := ep.Port
 	if port == 0 {
 		port = 443
 	}
-	sni := in.ServerName
-	if sni == "" {
-		sni = strings.Split(in.Dest, ":")[0]
+	name := displayName(u, firstNonEmpty(nodeName, ep.Name))
+	proto := strings.ToLower(strings.TrimSpace(ep.Protocol))
+	switch proto {
+	case "vmess":
+		return vmessLink(host, port, u.UUID, name)
+	case "shadowsocks", "ss":
+		return ssLink(host, port, ep.Method, ep.Password, name)
+	default:
+		return vlessLink(host, port, ep, u.UUID, name)
 	}
+}
+
+func vlessLink(host string, port int, ep Endpoint, uuid, name string) string {
+	sni := ep.ServerName
 	q := url.Values{}
 	q.Set("encryption", "none")
-	q.Set("security", "reality")
 	q.Set("type", "tcp")
-	q.Set("sni", sni)
-	q.Set("fp", "chrome")
-	q.Set("pbk", in.PublicKey)
-	q.Set("sid", in.ShortID)
-	if in.Flow != "" {
-		q.Set("flow", in.Flow)
+	if ep.Security == "none" {
+		q.Set("security", "none")
+	} else {
+		q.Set("security", "reality")
+		q.Set("sni", sni)
+		q.Set("fp", "chrome")
+		q.Set("pbk", ep.PublicKey)
+		q.Set("sid", ep.ShortID)
+		if ep.Flow != "" {
+			q.Set("flow", ep.Flow)
+		}
 	}
-	name := displayName(u, nodeName)
-	return fmt.Sprintf("vless://%s@%s:%d?%s#%s",
-		u.UUID, host, port, q.Encode(), url.QueryEscape(name))
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", uuid, host, port, q.Encode(), url.QueryEscape(name))
+}
+
+func vmessLink(host string, port int, uuid, name string) string {
+	obj := map[string]any{
+		"v":    "2",
+		"ps":   name,
+		"add":  host,
+		"port": strconv.Itoa(port),
+		"id":   uuid,
+		"aid":  "0",
+		"net":  "tcp",
+		"type": "none",
+		"tls":  "",
+	}
+	raw, _ := json.Marshal(obj)
+	return "vmess://" + base64.StdEncoding.EncodeToString(raw)
+}
+
+func ssLink(host string, port int, method, password, name string) string {
+	if method == "" {
+		method = "aes-128-gcm"
+	}
+	user := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(method + ":" + password))
+	return fmt.Sprintf("ss://%s@%s:%d#%s", user, host, port, url.QueryEscape(name))
 }
 
 func displayName(u models.User, nodeName string) string {
@@ -88,14 +157,7 @@ func displayName(u models.User, nodeName string) string {
 func LinksForEndpoints(eps []Endpoint, u models.User) []string {
 	var out []string
 	for _, ep := range eps {
-		in := models.Inbound{
-			Port:       ep.Port,
-			Flow:       ep.Flow,
-			ServerName: ep.ServerName,
-			PublicKey:  ep.PublicKey,
-			ShortID:    ep.ShortID,
-		}
-		out = append(out, VLESSLinkNamed(ep.Host, in, u, ep.Name))
+		out = append(out, ShareLink(ep, u, ep.Name))
 	}
 	return out
 }
@@ -105,10 +167,14 @@ func ClashYAML(host string, in models.Inbound, u models.User) string {
 		Name:       displayName(u, ""),
 		Host:       host,
 		Port:       in.Port,
+		Protocol:   firstNonEmpty(in.Protocol, "vless"),
 		Flow:       in.Flow,
+		Security:   in.Security,
 		ServerName: in.ServerName,
 		PublicKey:  in.PublicKey,
 		ShortID:    in.ShortID,
+		Method:     in.Method,
+		Password:   in.Password,
 	}}, u)
 }
 
@@ -133,21 +199,48 @@ func ClashYAMLMulti(eps []Endpoint, u models.User) string {
 		if port == 0 {
 			port = 443
 		}
-		sni := ep.ServerName
+		proto := strings.ToLower(strings.TrimSpace(ep.Protocol))
 		b.WriteString("  - name: " + strconv.Quote(name) + "\n")
-		b.WriteString("    type: vless\n")
-		b.WriteString("    server: " + host + "\n")
-		b.WriteString("    port: " + strconv.Itoa(port) + "\n")
-		b.WriteString("    uuid: " + u.UUID + "\n")
-		b.WriteString("    network: tcp\n")
-		b.WriteString("    tls: true\n")
-		b.WriteString("    udp: true\n")
-		b.WriteString("    flow: " + ep.Flow + "\n")
-		b.WriteString("    servername: " + sni + "\n")
-		b.WriteString("    client-fingerprint: chrome\n")
-		b.WriteString("    reality-opts:\n")
-		b.WriteString("      public-key: " + ep.PublicKey + "\n")
-		b.WriteString("      short-id: " + ep.ShortID + "\n")
+		switch proto {
+		case "vmess":
+			b.WriteString("    type: vmess\n")
+			b.WriteString("    server: " + host + "\n")
+			b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+			b.WriteString("    uuid: " + u.UUID + "\n")
+			b.WriteString("    alterId: 0\n")
+			b.WriteString("    cipher: auto\n")
+			b.WriteString("    network: tcp\n")
+			b.WriteString("    udp: true\n")
+		case "shadowsocks", "ss":
+			method := ep.Method
+			if method == "" {
+				method = "aes-128-gcm"
+			}
+			b.WriteString("    type: ss\n")
+			b.WriteString("    server: " + host + "\n")
+			b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+			b.WriteString("    cipher: " + method + "\n")
+			b.WriteString("    password: " + strconv.Quote(ep.Password) + "\n")
+			b.WriteString("    udp: true\n")
+		default:
+			b.WriteString("    type: vless\n")
+			b.WriteString("    server: " + host + "\n")
+			b.WriteString("    port: " + strconv.Itoa(port) + "\n")
+			b.WriteString("    uuid: " + u.UUID + "\n")
+			b.WriteString("    network: tcp\n")
+			b.WriteString("    udp: true\n")
+			if ep.Security == "none" {
+				b.WriteString("    tls: false\n")
+			} else {
+				b.WriteString("    tls: true\n")
+				b.WriteString("    flow: " + ep.Flow + "\n")
+				b.WriteString("    servername: " + ep.ServerName + "\n")
+				b.WriteString("    client-fingerprint: chrome\n")
+				b.WriteString("    reality-opts:\n")
+				b.WriteString("      public-key: " + ep.PublicKey + "\n")
+				b.WriteString("      short-id: " + ep.ShortID + "\n")
+			}
+		}
 	}
 	b.WriteString("proxy-groups:\n")
 	b.WriteString("  - name: PROXY\n")
@@ -176,4 +269,11 @@ func Base64Links(links []string) string {
 func SubURL(publicURL, token string) string {
 	base := strings.TrimRight(publicURL, "/")
 	return base + "/sub/" + token
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }

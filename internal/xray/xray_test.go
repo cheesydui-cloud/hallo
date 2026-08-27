@@ -83,3 +83,29 @@ func TestBuildFullCustomOutbound(t *testing.T) {
 		t.Fatalf("Vision sniffing must be routeOnly, got %#v", sniff)
 	}
 }
+
+func TestBuildFullVMessAndShadowsocks(t *testing.T) {
+	users := []models.User{{UUID: "u", Email: "e"}}
+	ins := []models.Inbound{
+		{Tag: "vless-in", Protocol: "vless", Port: 443, Security: "reality", Dest: "www.microsoft.com:443", ServerName: "www.microsoft.com", PrivateKey: "k", PublicKey: "p", ShortID: "s", Enabled: true},
+		{Tag: "vmess-in", Protocol: "vmess", Port: 2053, Listen: "0.0.0.0", Enabled: true},
+		{Tag: "ss-in", Protocol: "shadowsocks", Port: 8388, Method: "aes-128-gcm", Password: "secret", Enabled: true},
+	}
+	cfg := BuildFull(ins, users, nil, nil)
+	got := cfg["inbounds"].([]any)
+	if len(got) != 3 {
+		t.Fatalf("want 3 inbounds, got %d", len(got))
+	}
+	vmess := got[1].(map[string]any)
+	if vmess["protocol"] != "vmess" || vmess["port"] != 2053 {
+		t.Fatalf("vmess %#v", vmess)
+	}
+	ss := got[2].(map[string]any)
+	if ss["protocol"] != "shadowsocks" {
+		t.Fatalf("ss %#v", ss)
+	}
+	settings := ss["settings"].(map[string]any)
+	if settings["password"] != "secret" || settings["method"] != "aes-128-gcm" {
+		t.Fatalf("ss settings %#v", settings)
+	}
+}

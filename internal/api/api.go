@@ -294,6 +294,7 @@ func (s *Server) ensureInbound(port int) error {
 		Listen:     "0.0.0.0",
 		Port:       port,
 		Flow:       "xtls-rprx-vision",
+		Security:   "reality",
 		Dest:       "www.microsoft.com:443",
 		ServerName: "www.microsoft.com",
 		PrivateKey: priv,
@@ -310,6 +311,9 @@ func (s *Server) ensureInbound(port int) error {
 
 func (s *Server) repairInbound(in *models.Inbound) error {
 	if in == nil {
+		return nil
+	}
+	if strings.ToLower(in.Protocol) != "vless" || in.Security == "none" {
 		return nil
 	}
 	changed := false
@@ -691,6 +695,19 @@ func (s *Server) getInbound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) inboundView(in models.Inbound) map[string]any {
+	keysOK := true
+	switch strings.ToLower(in.Protocol) {
+	case "shadowsocks", "ss":
+		keysOK = in.Password != ""
+	case "vmess":
+		keysOK = true
+	default:
+		if in.Security == "none" {
+			keysOK = true
+		} else {
+			keysOK = xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey)
+		}
+	}
 	return map[string]any{
 		"id":           in.ID,
 		"node_id":      in.NodeID,
@@ -701,13 +718,16 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 		"listen":       in.Listen,
 		"port":         in.Port,
 		"flow":         in.Flow,
+		"security":     in.Security,
 		"dest":         in.Dest,
 		"server_name":  in.ServerName,
 		"private_key":  in.PrivateKey,
 		"public_key":   in.PublicKey,
 		"short_id":     in.ShortID,
+		"method":       in.Method,
+		"password":     in.Password,
 		"enabled":      in.Enabled,
-		"keys_ok":      xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey),
+		"keys_ok":      keysOK,
 		"xray_running": s.xray.Running(),
 		"xray_path":    s.xray.Bin(),
 		"xray_message": s.xray.Message(),
@@ -717,8 +737,14 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 }
 
 func (s *Server) normalizeInbound(in *models.Inbound) error {
-	if in.Protocol == "" {
+	in.Protocol = strings.ToLower(strings.TrimSpace(in.Protocol))
+	switch in.Protocol {
+	case "vmess", "shadowsocks", "ss":
+	default:
 		in.Protocol = "vless"
+	}
+	if in.Protocol == "ss" {
+		in.Protocol = "shadowsocks"
 	}
 	if in.Listen == "" {
 		in.Listen = "0.0.0.0"
@@ -727,41 +753,93 @@ func (s *Server) normalizeInbound(in *models.Inbound) error {
 		in.Port = s.defaultInboundPort()
 	}
 	if in.Tag == "" {
-		in.Tag = "vless-in"
+		in.Tag = fmt.Sprintf("%s-%d", in.Protocol, in.Port)
 	}
-	if in.Dest == "" {
-		in.Dest = "www.microsoft.com:443"
-	}
-	if in.ServerName == "" {
-		in.ServerName = strings.Split(in.Dest, ":")[0]
-	}
-	if in.Flow == "" {
-		in.Flow = "xtls-rprx-vision"
-	}
-	if xray.IsPlaceholderKey(in.PrivateKey) || xray.IsPlaceholderKey(in.PublicKey) ||
-		!xray.ValidRealityKey(in.PrivateKey) || !xray.ValidRealityKey(in.PublicKey) {
-		priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
-		if err != nil {
-			return fmt.Errorf("生成 Reality 密钥失败：%w", err)
+	switch in.Protocol {
+	case "vmess":
+		in.Security = "none"
+		in.Flow = ""
+	case "shadowsocks":
+		in.Security = "none"
+		in.Flow = ""
+		if in.Method == "" {
+			in.Method = "aes-128-gcm"
 		}
-		in.PrivateKey = priv
-		in.PublicKey = pub
+		if strings.TrimSpace(in.Password) == "" {
+			tok, err := auth.RandomToken(12)
+			if err != nil {
+				return err
+			}
+			in.Password = tok
+		}
+	default:
+		if in.Security == "none" {
+			in.Flow = ""
+		} else {
+			in.Security = "reality"
+			if in.Dest == "" {
+				in.Dest = "www.microsoft.com:443"
+			}
+			if in.ServerName == "" {
+				in.ServerName = strings.Split(in.Dest, ":")[0]
+			}
+			if in.Flow == "" {
+				in.Flow = "xtls-rprx-vision"
+			}
+			if xray.IsPlaceholderKey(in.PrivateKey) || xray.IsPlaceholderKey(in.PublicKey) ||
+				!xray.ValidRealityKey(in.PrivateKey) || !xray.ValidRealityKey(in.PublicKey) {
+				priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
+				if err != nil {
+					return fmt.Errorf("生成 Reality 密钥失败：%w", err)
+				}
+				in.PrivateKey = priv
+				in.PublicKey = pub
+			}
+			if strings.TrimSpace(in.ShortID) == "" {
+				in.ShortID = xray.RandomShortID()
+			}
+		}
 	}
-	if strings.TrimSpace(in.ShortID) == "" {
-		in.ShortID = xray.RandomShortID()
+	return s.ensureUniquePort(in)
+}
+
+func (s *Server) ensureUniquePort(in *models.Inbound) error {
+	if in.NodeID <= 0 {
+		return nil
+	}
+	items, err := s.db.ListInboundsForNode(in.NodeID)
+	if err != nil {
+		return err
+	}
+	for _, other := range items {
+		if other.ID == in.ID || !other.Enabled {
+			continue
+		}
+		listen := other.Listen
+		if listen == "" {
+			listen = "0.0.0.0"
+		}
+		mine := in.Listen
+		if mine == "" {
+			mine = "0.0.0.0"
+		}
+		if other.Port == in.Port && (listen == mine || listen == "0.0.0.0" || mine == "0.0.0.0") {
+			label := other.Remark
+			if label == "" {
+				label = other.Tag
+			}
+			return fmt.Errorf("这台服务器端口 %d 已被「%s」占用，请换端口", in.Port, label)
+		}
 	}
 	return nil
 }
 
 func (s *Server) afterInboundSave(in *models.Inbound) error {
-	if in.NodeID > 0 {
-		if n, err := s.db.GetNode(in.NodeID); err == nil && in.Port > 0 {
+	if in.NodeID > 0 && in.Protocol == "vless" && in.Security != "none" && in.Port > 0 {
+		if n, err := s.db.GetNode(in.NodeID); err == nil {
 			n.Port = in.Port
 			_ = s.db.UpdateNode(*n)
 		}
-	} else if local, err := s.db.LocalNode(); err == nil && in.Port > 0 {
-		local.Port = in.Port
-		_ = s.db.UpdateNode(*local)
 	}
 	return s.syncXray()
 }
@@ -805,18 +883,11 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.normalizeInbound(&in); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInboundErr(w, err)
 		return
 	}
 	if in.Remark == "" {
-		if in.NodeID > 0 {
-			if n, err := s.db.GetNode(in.NodeID); err == nil {
-				in.Remark = n.Name
-			}
-		}
-		if in.Remark == "" {
-			in.Remark = fmt.Sprintf("VLESS-%d", in.Port)
-		}
+		in.Remark = fmt.Sprintf("%s-%d", strings.ToUpper(in.Protocol), in.Port)
 	}
 	if err := s.db.SaveInbound(&in); err != nil {
 		writeErr(w, 500, err.Error())
@@ -857,7 +928,7 @@ func (s *Server) updateInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.normalizeInbound(&in); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInboundErr(w, err)
 		return
 	}
 	if err := s.db.SaveInbound(&in); err != nil {
@@ -904,6 +975,10 @@ func (s *Server) regenInboundKeys(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "入站不存在")
 		return
 	}
+	if strings.ToLower(in.Protocol) != "vless" || in.Security == "none" {
+		writeErr(w, 400, "只有 VLESS+Reality 才需要换密钥")
+		return
+	}
 	priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
 	if err != nil {
 		writeErr(w, 500, "生成 Reality 密钥失败："+err.Error())
@@ -947,7 +1022,7 @@ func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
 		in.Enabled = true
 	}
 	if err := s.normalizeInbound(&in); err != nil {
-		writeErr(w, 500, err.Error())
+		writeInboundErr(w, err)
 		return
 	}
 	if err := s.db.SaveInbound(&in); err != nil {
@@ -1206,6 +1281,7 @@ func (s *Server) seedInboundForNode(n models.Node) error {
 		Listen:     "0.0.0.0",
 		Port:       port,
 		Flow:       "xtls-rprx-vision",
+		Security:   "reality",
 		Dest:       "www.microsoft.com:443",
 		ServerName: "www.microsoft.com",
 		Enabled:    true,
@@ -1310,6 +1386,15 @@ func hostname(r *http.Request) string {
 
 func parseID(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
+}
+
+func writeInboundErr(w http.ResponseWriter, err error) {
+	msg := err.Error()
+	if strings.Contains(msg, "端口") {
+		writeErr(w, 400, msg)
+		return
+	}
+	writeErr(w, 500, msg)
 }
 
 func (s *Server) SeedInboundIfNeeded() error {

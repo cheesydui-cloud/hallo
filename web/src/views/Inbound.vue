@@ -22,11 +22,14 @@ const empty = () => ({
   listen: '0.0.0.0',
   port: 443,
   flow: 'xtls-rprx-vision',
+  security: 'reality',
   dest: 'www.microsoft.com:443',
   server_name: 'www.microsoft.com',
   private_key: '',
   public_key: '',
   short_id: '',
+  method: 'aes-128-gcm',
+  password: '',
   enabled: true,
 })
 const form = ref(empty())
@@ -66,6 +69,63 @@ function statusOf(n) {
   return n.xray_running ? 'Xray 运行中' : n.xray_message || 'Xray 未启动'
 }
 
+function usedPorts(nodeId, skipId) {
+  return items.value
+    .filter((i) => i.node_id === nodeId && i.enabled && i.id !== skipId)
+    .map((i) => i.port)
+}
+
+function nextFreePort(nodeId) {
+  const taken = new Set(usedPorts(nodeId, 0))
+  const preferred = [443, 8443, 2053, 2083, 2087, 2096, 8080, 8880]
+  for (const p of preferred) {
+    if (!taken.has(p)) return p
+  }
+  for (let p = 10000; p < 20000; p++) {
+    if (!taken.has(p)) return p
+  }
+  return 443
+}
+
+function applyProtocolDefaults() {
+  const p = form.value.protocol
+  if (p === 'vless') {
+    form.value.security = 'reality'
+    form.value.flow = form.value.flow || 'xtls-rprx-vision'
+    form.value.dest = form.value.dest || 'www.microsoft.com:443'
+    form.value.server_name = form.value.server_name || 'www.microsoft.com'
+  } else if (p === 'vmess') {
+    form.value.security = 'none'
+    form.value.flow = ''
+  } else if (p === 'shadowsocks') {
+    form.value.security = 'none'
+    form.value.flow = ''
+    form.value.method = form.value.method || 'aes-128-gcm'
+  }
+}
+
+function protocolLabel(row) {
+  const p = (row.protocol || 'vless').toLowerCase()
+  if (p === 'vmess') return 'VMess'
+  if (p === 'shadowsocks' || p === 'ss') return 'Shadowsocks'
+  if (row.security === 'none') return 'VLESS'
+  return 'VLESS+Reality'
+}
+
+function protocolClass(row) {
+  const p = (row.protocol || 'vless').toLowerCase()
+  if (p === 'vmess') return 'bg-violet-50 text-violet-700'
+  if (p === 'shadowsocks' || p === 'ss') return 'bg-amber-50 text-amber-800'
+  return 'bg-sky-50 text-sky-700'
+}
+
+function extraOf(row) {
+  const p = (row.protocol || 'vless').toLowerCase()
+  if (p === 'shadowsocks' || p === 'ss') return row.method || 'aes-128-gcm'
+  if (p === 'vmess') return 'tcp'
+  return row.server_name || ''
+}
+
 function openAdd() {
   if (!current.value) {
     toastErr('先去「服务器」添加机器，并在节点机上安装 Agent')
@@ -73,15 +133,15 @@ function openAdd() {
   }
   form.value = empty()
   form.value.node_id = current.value.id
-  form.value.port = current.value.port || 443
+  form.value.port = nextFreePort(current.value.id)
   form.value.remark = current.value.name
-  form.value.tag = 'in-' + current.value.id
+  form.value.tag = ''
   editing.value = null
   showForm.value = true
 }
 
 function openEdit(row) {
-  form.value = { ...row }
+  form.value = { ...empty(), ...row }
   editing.value = row.id
   showForm.value = true
 }
@@ -91,9 +151,14 @@ async function save() {
     toastErr('必须选择服务器')
     return
   }
+  applyProtocolDefaults()
   busy.value = true
   try {
-    const payload = { ...form.value, node_id: Number(form.value.node_id) || 0, port: Number(form.value.port) || 443 }
+    const payload = {
+      ...form.value,
+      node_id: Number(form.value.node_id) || 0,
+      port: Number(form.value.port) || 443,
+    }
     const r = editing.value ? await api.updateInbound(editing.value, payload) : await api.createInbound(payload)
     if (r.warning) toastErr('已保存，但 Xray 未起来：' + r.warning)
     else toastOk(editing.value ? '已更新并下发到这台服务器' : '已在这台服务器上添加协议并下发')
@@ -147,6 +212,11 @@ async function reloadXray() {
     toastErr(e)
   }
 }
+
+function isReality(row) {
+  const p = (row?.protocol || form.value.protocol || 'vless').toLowerCase()
+  return p === 'vless' && (row?.security || form.value.security) !== 'none'
+}
 </script>
 
 <template>
@@ -154,7 +224,7 @@ async function reloadXray() {
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
       <div>
         <h2 class="text-xl font-semibold">入站</h2>
-        <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加协议。远程机由 Agent 拉配置跑官方 Xray。</p>
+        <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加 VLESS / VMess / Shadowsocks。同一台机端口不能重复。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn-ghost" type="button" @click="reloadXray">重载本机 Xray</button>
@@ -193,7 +263,7 @@ async function reloadXray() {
         <div v-if="current" class="flex items-center justify-between mb-3">
           <div>
             <div class="font-medium">{{ current.name }} <span class="text-xs text-black/40 font-normal">{{ current.is_local ? '面板本机' : 'Agent' }}</span></div>
-            <div class="text-xs text-black/45 mt-0.5">{{ current.public_host || current.host || '未上报 IP' }} · 在这台机器上添加 VLESS+Reality</div>
+            <div class="text-xs text-black/45 mt-0.5">{{ current.public_host || current.host || '未上报 IP' }} · 在这台机器上添加不同协议</div>
           </div>
         </div>
 
@@ -206,8 +276,8 @@ async function reloadXray() {
                 <th>端口</th>
                 <th>协议</th>
                 <th>客户端</th>
-                <th>SNI</th>
-                <th>密钥</th>
+                <th>参数</th>
+                <th>状态</th>
                 <th></th>
               </tr>
             </thead>
@@ -222,25 +292,26 @@ async function reloadXray() {
                 </td>
                 <td class="font-mono">{{ row.port }}</td>
                 <td>
-                  <span class="badge bg-sky-50 text-sky-700">{{ (row.protocol || 'vless').toUpperCase() }}+Reality</span>
+                  <span class="badge" :class="protocolClass(row)">{{ protocolLabel(row) }}</span>
                 </td>
                 <td>{{ row.client_num ?? 0 }}</td>
-                <td class="text-xs">{{ row.server_name }}</td>
+                <td class="text-xs font-mono">{{ extraOf(row) }}</td>
                 <td>
                   <span class="badge" :class="row.keys_ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'">
                     {{ row.keys_ok ? '正常' : '无效' }}
                   </span>
                 </td>
                 <td class="text-right whitespace-nowrap space-x-1">
-                  <button class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
+                  <button v-if="row.public_key" class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
+                  <button v-if="row.password" class="btn-ghost text-xs" type="button" @click="copyText(row.password, '已复制密码')">密码</button>
                   <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
-                  <button class="btn-ghost text-xs" type="button" @click="regen(row)">换密钥</button>
+                  <button v-if="isReality(row)" class="btn-ghost text-xs" type="button" @click="regen(row)">换密钥</button>
                   <button class="btn-danger text-xs" type="button" @click="remove(row)">删除</button>
                 </td>
               </tr>
               <tr v-if="current && !filtered.length">
                 <td colspan="8" class="text-center text-black/40 py-10">
-                  这台服务器还没有协议。点右上角「添加入站」。
+                  这台服务器还没有协议。点右上角「添加入站」，可选 VLESS、VMess 或 Shadowsocks。
                 </td>
               </tr>
               <tr v-if="!current">
@@ -265,13 +336,21 @@ async function reloadXray() {
               <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }} {{ n.is_local ? '· 本机' : '· Agent' }} · {{ n.public_host || n.host || '未上报 IP' }}</option>
             </select>
           </div>
+          <div class="md:col-span-2">
+            <label class="label">协议</label>
+            <select class="input" v-model="form.protocol" @change="applyProtocolDefaults">
+              <option value="vless">VLESS + Reality（推荐）</option>
+              <option value="vmess">VMess TCP</option>
+              <option value="shadowsocks">Shadowsocks</option>
+            </select>
+          </div>
           <div>
             <label class="label">备注</label>
             <input class="input" v-model="form.remark" placeholder="洛杉矶-443" />
           </div>
           <div>
             <label class="label">Tag</label>
-            <input class="input font-mono text-xs" v-model="form.tag" placeholder="自动" />
+            <input class="input font-mono text-xs" v-model="form.tag" placeholder="留空自动" />
           </div>
           <div>
             <label class="label">监听</label>
@@ -280,27 +359,49 @@ async function reloadXray() {
           <div>
             <label class="label">端口</label>
             <input class="input" type="number" v-model.number="form.port" />
+            <p class="text-[11px] text-black/40 mt-1">同一台服务器端口不能重复。443 被占用时换 8443 等。</p>
           </div>
-          <div>
-            <label class="label">Dest（回落）</label>
-            <input class="input" v-model="form.dest" />
-          </div>
-          <div>
-            <label class="label">SNI</label>
-            <input class="input" v-model="form.server_name" />
-          </div>
-          <div>
-            <label class="label">Flow</label>
-            <select class="input" v-model="form.flow">
-              <option value="xtls-rprx-vision">xtls-rprx-vision（推荐）</option>
-              <option value="">无</option>
-            </select>
-          </div>
-          <div>
-            <label class="label">Short ID</label>
-            <input class="input font-mono text-xs" v-model="form.short_id" placeholder="留空自动生成" />
-          </div>
-          <div class="md:col-span-2 text-xs text-black/40">密钥留空会自动生成。客户端用订阅，不必手填。</div>
+
+          <template v-if="form.protocol === 'vless'">
+            <div>
+              <label class="label">Dest（回落）</label>
+              <input class="input" v-model="form.dest" />
+            </div>
+            <div>
+              <label class="label">SNI</label>
+              <input class="input" v-model="form.server_name" />
+            </div>
+            <div>
+              <label class="label">Flow</label>
+              <select class="input" v-model="form.flow">
+                <option value="xtls-rprx-vision">xtls-rprx-vision（推荐）</option>
+                <option value="">无</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Short ID</label>
+              <input class="input font-mono text-xs" v-model="form.short_id" placeholder="留空自动生成" />
+            </div>
+            <div class="md:col-span-2 text-xs text-black/40">Reality 密钥留空会自动生成。客户端用订阅，不必手填。</div>
+          </template>
+
+          <template v-if="form.protocol === 'shadowsocks'">
+            <div>
+              <label class="label">加密</label>
+              <select class="input" v-model="form.method">
+                <option value="aes-128-gcm">aes-128-gcm</option>
+                <option value="aes-256-gcm">aes-256-gcm</option>
+                <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+                <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">密码</label>
+              <input class="input font-mono text-xs" v-model="form.password" placeholder="留空自动生成" />
+            </div>
+          </template>
+
+          <p v-if="form.protocol === 'vmess'" class="md:col-span-2 text-xs text-black/40">VMess 用每个用户的 UUID，无需单独密码。明文 TCP，适合内网或已有 TLS 反代。</p>
         </div>
         <label class="flex items-center gap-2 text-sm">
           <input type="checkbox" v-model="form.enabled" />

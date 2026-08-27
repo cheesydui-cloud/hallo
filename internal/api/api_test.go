@@ -326,6 +326,62 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 		t.Fatalf("missing default direct outbound %#v", outs.Items)
 	}
 
+	dup, _ := json.Marshal(map[string]any{
+		"node_id": nodes.Items[0].ID, "protocol": "vmess", "port": listed.Items[0].Port,
+	})
+	dupRes, err := http.DefaultClient.Do(cookieReq(http.MethodPost, ts.URL+"/api/inbounds", dup, cookies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dupRes.StatusCode != 400 {
+		bb, _ := io.ReadAll(dupRes.Body)
+		t.Fatalf("duplicate port want 400, got %s %s", dupRes.Status, bb)
+	}
+	dupRes.Body.Close()
+
+	vmessBody, _ := json.Marshal(map[string]any{
+		"node_id": nodes.Items[0].ID, "protocol": "vmess", "port": 2053, "remark": "本机-vmess",
+	})
+	vmRes, err := http.DefaultClient.Do(cookieReq(http.MethodPost, ts.URL+"/api/inbounds", vmessBody, cookies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vmRes.StatusCode != 200 {
+		bb, _ := io.ReadAll(vmRes.Body)
+		t.Fatalf("vmess inbound %s %s", vmRes.Status, bb)
+	}
+	var vmIn struct {
+		Protocol string `json:"protocol"`
+		Port     int    `json:"port"`
+	}
+	_ = json.NewDecoder(vmRes.Body).Decode(&vmIn)
+	vmRes.Body.Close()
+	if vmIn.Protocol != "vmess" || vmIn.Port != 2053 {
+		t.Fatalf("vmess inbound %#v", vmIn)
+	}
+
+	ssBody, _ := json.Marshal(map[string]any{
+		"node_id": nodes.Items[0].ID, "protocol": "shadowsocks", "port": 8388, "method": "aes-128-gcm",
+	})
+	ssRes, err := http.DefaultClient.Do(cookieReq(http.MethodPost, ts.URL+"/api/inbounds", ssBody, cookies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ssRes.StatusCode != 200 {
+		bb, _ := io.ReadAll(ssRes.Body)
+		t.Fatalf("ss inbound %s %s", ssRes.Status, bb)
+	}
+	var ssIn struct {
+		Protocol string `json:"protocol"`
+		Password string `json:"password"`
+		Method   string `json:"method"`
+	}
+	_ = json.NewDecoder(ssRes.Body).Decode(&ssIn)
+	ssRes.Body.Close()
+	if ssIn.Protocol != "shadowsocks" || ssIn.Password == "" || ssIn.Method != "aes-128-gcm" {
+		t.Fatalf("ss inbound %#v", ssIn)
+	}
+
 	vlessOut, _ := json.Marshal(map[string]any{
 		"remark": "链式", "tag": "chain", "protocol": "vless",
 		"address": "1.1.1.1", "port": 443, "uuid": "11111111-1111-1111-1111-111111111111",

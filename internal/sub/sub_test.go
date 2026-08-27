@@ -50,3 +50,22 @@ func TestMultiLinks(t *testing.T) {
 		t.Fatalf("clash: %s", y)
 	}
 }
+
+func TestShareLinkVMessAndSS(t *testing.T) {
+	u := models.User{UUID: "11111111-1111-1111-1111-111111111111", Email: "a@b.c"}
+	vm := ShareLink(Endpoint{Protocol: "vmess", Host: "1.1.1.1", Port: 2053, Name: "洛杉矶-vmess"}, u, "")
+	if !strings.HasPrefix(vm, "vmess://") {
+		t.Fatalf("vmess link %q", vm)
+	}
+	ss := ShareLink(Endpoint{Protocol: "shadowsocks", Host: "2.2.2.2", Port: 8388, Method: "aes-128-gcm", Password: "pw", Name: "ss"}, u, "")
+	if !strings.HasPrefix(ss, "ss://") || !strings.Contains(ss, "2.2.2.2:8388") {
+		t.Fatalf("ss link %q", ss)
+	}
+	y := ClashYAMLMulti([]Endpoint{
+		{Protocol: "vmess", Host: "1.1.1.1", Port: 2053, Name: "vm"},
+		{Protocol: "shadowsocks", Host: "2.2.2.2", Port: 8388, Method: "aes-128-gcm", Password: "pw", Name: "ss"},
+	}, u)
+	if !strings.Contains(y, "type: vmess") || !strings.Contains(y, "type: ss") {
+		t.Fatalf("clash multi: %s", y)
+	}
+}

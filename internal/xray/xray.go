@@ -319,12 +319,12 @@ func BuildFull(inbounds []models.Inbound, users []models.User, outs []models.Out
 		}
 		usedTag[tag]++
 		inTags = append(inTags, tag)
-		xIn = append(xIn, buildVLESSInbound(in, tag, users))
+		xIn = append(xIn, buildInbound(in, tag, users))
 	}
 	if len(xIn) == 0 && len(inbounds) > 0 {
 		in := inbounds[0]
-		xIn = append(xIn, buildVLESSInbound(in, "vless-in", users))
-		inTags = []string{"vless-in"}
+		xIn = append(xIn, buildInbound(in, "in-1", users))
+		inTags = []string{"in-1"}
 	}
 
 	outbounds, defaultTag := buildOutbounds(outs)
@@ -387,18 +387,18 @@ func BuildFull(inbounds []models.Inbound, users []models.User, outs []models.Out
 	}
 }
 
-func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[string]any {
-	clients := make([]map[string]any, 0, len(users))
-	for _, u := range users {
-		c := map[string]any{
-			"id":    u.UUID,
-			"email": u.Email,
-		}
-		if in.Flow != "" {
-			c["flow"] = in.Flow
-		}
-		clients = append(clients, c)
+func buildInbound(in models.Inbound, tag string, users []models.User) map[string]any {
+	switch strings.ToLower(strings.TrimSpace(in.Protocol)) {
+	case "vmess":
+		return buildVMessInbound(in, tag, users)
+	case "shadowsocks", "ss":
+		return buildSSInbound(in, tag)
+	default:
+		return buildVLESSInbound(in, tag, users)
 	}
+}
+
+func listenPort(in models.Inbound) (string, int) {
 	listen := in.Listen
 	if listen == "" {
 		listen = "0.0.0.0"
@@ -406,6 +406,45 @@ func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[s
 	port := in.Port
 	if port == 0 {
 		port = 443
+	}
+	return listen, port
+}
+
+func sniffing() map[string]any {
+	return map[string]any{
+		"enabled":      true,
+		"destOverride": []string{"http", "tls"},
+		"routeOnly":    true,
+	}
+}
+
+func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[string]any {
+	clients := make([]map[string]any, 0, len(users))
+	for _, u := range users {
+		c := map[string]any{
+			"id":    u.UUID,
+			"email": u.Email,
+		}
+		if in.Flow != "" && (in.Security == "reality" || in.Security == "") {
+			c["flow"] = in.Flow
+		}
+		clients = append(clients, c)
+	}
+	listen, port := listenPort(in)
+	item := map[string]any{
+		"tag":      tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": "vless",
+		"settings": map[string]any{
+			"clients":    clients,
+			"decryption": "none",
+		},
+		"sniffing": sniffing(),
+	}
+	if in.Security == "none" {
+		item["streamSettings"] = map[string]any{"network": "tcp", "security": "none"}
+		return item
 	}
 	dest := in.Dest
 	if dest == "" {
@@ -415,33 +454,62 @@ func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[s
 	if sni == "" {
 		sni = strings.Split(dest, ":")[0]
 	}
+	item["streamSettings"] = map[string]any{
+		"network":  "tcp",
+		"security": "reality",
+		"realitySettings": map[string]any{
+			"show":        false,
+			"dest":        dest,
+			"xver":        0,
+			"serverNames": []string{sni},
+			"privateKey":  in.PrivateKey,
+			"shortIds":    []string{"", in.ShortID},
+		},
+	}
+	return item
+}
+
+func buildVMessInbound(in models.Inbound, tag string, users []models.User) map[string]any {
+	clients := make([]map[string]any, 0, len(users))
+	for _, u := range users {
+		clients = append(clients, map[string]any{
+			"id":      u.UUID,
+			"email":   u.Email,
+			"alterId": 0,
+		})
+	}
+	listen, port := listenPort(in)
 	return map[string]any{
 		"tag":      tag,
 		"listen":   listen,
 		"port":     port,
-		"protocol": firstNonEmpty(in.Protocol, "vless"),
-		"settings": map[string]any{
-			"clients":    clients,
-			"decryption": "none",
-		},
+		"protocol": "vmess",
+		"settings": map[string]any{"clients": clients},
 		"streamSettings": map[string]any{
 			"network":  "tcp",
-			"security": "reality",
-			"realitySettings": map[string]any{
-				"show":        false,
-				"dest":        dest,
-				"xver":        0,
-				"serverNames": []string{sni},
-				"privateKey":  in.PrivateKey,
-				"shortIds":    []string{"", in.ShortID},
-			},
+			"security": "none",
 		},
-		// Vision + sniffing 改写目标会把连接掐断；routeOnly 只给路由看，不改出口。
-		"sniffing": map[string]any{
-			"enabled":      true,
-			"destOverride": []string{"http", "tls"},
-			"routeOnly":    true,
+		"sniffing": sniffing(),
+	}
+}
+
+func buildSSInbound(in models.Inbound, tag string) map[string]any {
+	listen, port := listenPort(in)
+	method := in.Method
+	if method == "" {
+		method = "aes-128-gcm"
+	}
+	return map[string]any{
+		"tag":      tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": "shadowsocks",
+		"settings": map[string]any{
+			"method":   method,
+			"password": in.Password,
+			"network":  "tcp,udp",
 		},
+		"sniffing": sniffing(),
 	}
 }
 

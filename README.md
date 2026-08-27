@@ -5,16 +5,16 @@
 **用法（按这个顺序）：**
 
 1. **服务器** — 登记 A/B/C/D，把安装命令拿到那台机用 root 执行，等到「在线」且 Xray 运行中  
-2. **入站** — 左边点那台服务器，右边添加 VLESS+Reality（端口默认 443）  
+2. **入站** — 左边点那台服务器，右边添加 VLESS+Reality / VMess / Shadowsocks（同一台机端口不能重复）  
 3. **出站** — 默认直连，不用改  
 4. **客户端** — 加一个用户，复制订阅。没有用户就没有 UUID，节点一定不通
 
 当前版本：
 
 - 左侧栏：总览 / 服务器 / 入站 / 出站 / 客户端 / 套餐 / 设置
-- 入站页：先选服务器，再在这台机器上加协议；每台机自己的 Reality 密钥
+- 入站页：先选服务器，再在这台机器上加 VLESS+Reality / VMess / Shadowsocks；每台机自己的 Reality 密钥
 - 出站：freedom 直连、blackhole、VLESS 链式、SOCKS/HTTP
-- 订阅按该服务器公网地址出 VLESS / Clash
+- 订阅按该服务器公网地址出对应协议的分享链接 / Clash
 - 面板自更新、Agent 一键安装 / 推送更新
 
 流量精确 Stats 仍是下一期。
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 **指定版本：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.4.0
+	curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.5.0
 ```
 
 **自定义面板端口 / 公网地址：**
@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 钉死版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.4.0
+	curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.5.0
 ```
 
 ---
@@ -85,7 +85,7 @@ curl -fsSL 'http://面板IP:18080/install/agent.sh?token=节点token' | sh
 
 成功时节点机会打印 `hallo-agent 已安装并在 systemd 中运行`，并尽量安装官方 Xray。面板里该节点变成「在线」，Agent 心跳会拉 Xray 配置并启动。
 
-5. 打开 **入站**：左边点刚上线的服务器，确认有一条 VLESS+Reality；没有就点「添加入站」
+5. 打开 **入站**：左边点刚上线的服务器，确认有一条协议；没有就点「添加入站」，可选 VLESS+Reality、VMess、Shadowsocks
 6. **客户端** 加用户，复制订阅。不选服务器 = 订阅包含全部启用机器
 
 不要用前台的 `hallo-agent run`：关掉终端进程就没了。
@@ -143,7 +143,7 @@ HALLO_DEV=1 ./bin/hallo serve --listen :18080 --data data
 发版：
 
 ```bash
-sh scripts/release.sh v0.4.0
+	sh scripts/release.sh v0.5.0
 ```
 
 打 Git 标签 `v*` 会触发 GitHub Actions，自动出 Release 附件。

@@ -54,7 +54,7 @@ async function reload() {
       </li>
       <li>
         <div class="text-[#1677ff] font-semibold">2. 入站</div>
-        <p class="text-black/50 mt-1">左边点那台服务器，右边「添加入站」。默认 VLESS + Reality，端口 443。</p>
+        <p class="text-black/50 mt-1">左边点那台服务器，右边添加 VLESS / VMess / Shadowsocks。同一台机端口不能重复。</p>
         <button class="btn-ghost text-xs mt-2" type="button" @click="router.push('/inbounds')">去配置</button>
       </li>
       <li>

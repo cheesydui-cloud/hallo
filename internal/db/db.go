@@ -155,6 +155,9 @@ func (d *DB) ensureColumns() error {
 		{"inbounds", "remark", "TEXT NOT NULL DEFAULT ''"},
 		{"inbounds", "tag", "TEXT NOT NULL DEFAULT 'vless-in'"},
 		{"inbounds", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"inbounds", "security", "TEXT NOT NULL DEFAULT 'reality'"},
+		{"inbounds", "method", "TEXT NOT NULL DEFAULT ''"},
+		{"inbounds", "password", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		if d.hasColumn(c.table, c.name) {
@@ -568,18 +571,24 @@ func (d *DB) UsersForNode(nodeID int64) ([]models.User, error) {
 	return out, nil
 }
 
-const inboundSelect = `SELECT i.id, i.node_id, i.remark, i.tag, i.protocol, i.listen, i.port, i.flow, i.dest, i.server_name, i.private_key, i.public_key, i.short_id, i.enabled, COALESCE(n.name, '') FROM inbounds i LEFT JOIN nodes n ON n.id = i.node_id`
+const inboundSelect = `SELECT i.id, i.node_id, i.remark, i.tag, i.protocol, i.listen, i.port, i.flow, i.dest, i.server_name, i.private_key, i.public_key, i.short_id, i.enabled, COALESCE(i.security,''), COALESCE(i.method,''), COALESCE(i.password,''), COALESCE(n.name, '') FROM inbounds i LEFT JOIN nodes n ON n.id = i.node_id`
 
 func scanInbound(s scanner) (models.Inbound, error) {
 	var in models.Inbound
 	var enabled int
-	err := s.Scan(&in.ID, &in.NodeID, &in.Remark, &in.Tag, &in.Protocol, &in.Listen, &in.Port, &in.Flow, &in.Dest, &in.ServerName, &in.PrivateKey, &in.PublicKey, &in.ShortID, &enabled, &in.NodeName)
+	err := s.Scan(&in.ID, &in.NodeID, &in.Remark, &in.Tag, &in.Protocol, &in.Listen, &in.Port, &in.Flow, &in.Dest, &in.ServerName, &in.PrivateKey, &in.PublicKey, &in.ShortID, &enabled, &in.Security, &in.Method, &in.Password, &in.NodeName)
 	if err != nil {
 		return in, err
 	}
 	in.Enabled = enabled != 0
 	if in.Tag == "" {
 		in.Tag = "vless-in"
+	}
+	if in.Protocol == "" {
+		in.Protocol = "vless"
+	}
+	if in.Security == "" && in.Protocol == "vless" {
+		in.Security = "reality"
 	}
 	return in, nil
 }
@@ -654,9 +663,9 @@ func (d *DB) SaveInbound(in *models.Inbound) error {
 		enabled = 0
 	}
 	if in.ID == 0 {
-		res, err := d.SQL.Exec(`INSERT INTO inbounds (node_id, remark, tag, protocol, listen, port, flow, dest, server_name, private_key, public_key, short_id, enabled)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled)
+		res, err := d.SQL.Exec(`INSERT INTO inbounds (node_id, remark, tag, protocol, listen, port, flow, dest, server_name, private_key, public_key, short_id, enabled, security, method, password)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled, in.Security, in.Method, in.Password)
 		if err != nil {
 			return err
 		}
@@ -664,8 +673,8 @@ func (d *DB) SaveInbound(in *models.Inbound) error {
 		in.Enabled = true
 		return nil
 	}
-	_, err := d.SQL.Exec(`UPDATE inbounds SET node_id=?, remark=?, tag=?, protocol=?, listen=?, port=?, flow=?, dest=?, server_name=?, private_key=?, public_key=?, short_id=?, enabled=? WHERE id=?`,
-		in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled, in.ID)
+	_, err := d.SQL.Exec(`UPDATE inbounds SET node_id=?, remark=?, tag=?, protocol=?, listen=?, port=?, flow=?, dest=?, server_name=?, private_key=?, public_key=?, short_id=?, enabled=?, security=?, method=?, password=? WHERE id=?`,
+		in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled, in.Security, in.Method, in.Password, in.ID)
 	return err
 }
 
