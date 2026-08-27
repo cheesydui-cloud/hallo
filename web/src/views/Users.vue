@@ -104,15 +104,20 @@ async function remove(id) {
   }
 }
 
-	async function copy(text, key) {
-	  const ok = await copyText(text)
-	  if (ok) {
-	    copied.value = key
-	    setTimeout(() => {
-	      if (copied.value === key) copied.value = ''
-	    }, 1500)
-	  }
-	}
+async function copy(text, key) {
+  const ok = await copyText(text)
+  if (ok) {
+    copied.value = key
+    setTimeout(() => {
+      if (copied.value === key) copied.value = ''
+    }, 1500)
+  }
+}
+
+function vlessText(u) {
+  if (u.vless_links && u.vless_links.length) return u.vless_links.join('\n')
+  return u.vless_link || ''
+}
 
 function expire(u) {
   if (!u.expire_at) return '不限'
@@ -130,7 +135,7 @@ function nodeLabel(ids) {
 <template>
   <div>
     <h2 class="text-xl font-semibold mb-2">客户端</h2>
-    <p class="text-black/45 text-sm mb-6">不选节点 = 订阅包含全部启用节点。选了则只出那些节点的 VLESS。</p>
+    <p class="text-black/45 text-sm mb-6">先加一个用户，再复制订阅。没有用户，节点里就没有 UUID，VLESS 一定连不上。不选服务器 = 订阅含全部启用机器。</p>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
     <form class="card p-5 mb-6 grid md:grid-cols-5 gap-3 items-end" @submit.prevent="create">
@@ -186,7 +191,7 @@ function nodeLabel(ids) {
             </td>
             <td class="px-4 py-3">{{ formatBytes(u.traffic_up + u.traffic_down) }}</td>
             <td class="px-4 py-3 space-x-2">
-              <button class="btn-ghost text-xs" type="button" @click="copy(u.vless_link, u.id + 'v')">
+              <button class="btn-ghost text-xs" type="button" @click="copy(vlessText(u), u.id + 'v')">
                 {{ copied === u.id + 'v' ? '已复制' : 'VLESS' }}
               </button>
               <button class="btn-ghost text-xs" type="button" @click="copy(u.sub_url, u.id + 's')">

@@ -49,33 +49,21 @@ func inboundsForNode(database *db.DB, n models.Node) ([]models.Inbound, error) {
 	}
 	var enabled []models.Inbound
 	for _, in := range items {
-		if in.Enabled || in.ID == 0 {
-			if in.Port == 0 && n.Port > 0 {
-				in.Port = n.Port
-			}
-			enabled = append(enabled, in)
+		if !in.Enabled && in.ID != 0 {
+			continue
 		}
+		if in.Port == 0 && n.Port > 0 {
+			in.Port = n.Port
+		}
+		enabled = append(enabled, in)
 	}
-	if len(enabled) > 0 {
-		return enabled, nil
-	}
-	base, err := database.GetInbound()
-	if err != nil {
-		return nil, err
-	}
-	return []models.Inbound{InboundForNode(*base, n)}, nil
+	return enabled, nil
 }
 
 func Build(database *db.DB, n models.Node, in models.Inbound) (map[string]any, error) {
 	inbounds, err := inboundsForNode(database, n)
 	if err != nil {
-		if in.Port == 0 && n.Port > 0 {
-			in.Port = n.Port
-		}
-		inbounds = []models.Inbound{in}
-	}
-	if len(inbounds) == 0 {
-		inbounds = []models.Inbound{InboundForNode(in, n)}
+		return nil, err
 	}
 	users, err := database.UsersForNode(n.ID)
 	if err != nil {
@@ -170,23 +158,7 @@ func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost s
 			continue
 		}
 		ins, err := database.ListInboundsForNode(n.ID)
-		if err != nil || len(ins) == 0 {
-			port := n.Port
-			if port == 0 {
-				port = in.Port
-			}
-			if port == 0 {
-				port = 443
-			}
-			eps = append(eps, sub.Endpoint{
-				Name:       n.Name,
-				Host:       host,
-				Port:       port,
-				Flow:       in.Flow,
-				ServerName: in.ServerName,
-				PublicKey:  in.PublicKey,
-				ShortID:    in.ShortID,
-			})
+		if err != nil {
 			continue
 		}
 		for _, ib := range ins {
@@ -199,6 +171,9 @@ func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost s
 			}
 			if port == 0 {
 				port = in.Port
+			}
+			if port == 0 {
+				port = 443
 			}
 			name := n.Name
 			if strings.TrimSpace(ib.Remark) != "" && ib.Remark != n.Name {

@@ -796,6 +796,14 @@ func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	in.ID = 0
 	in.Enabled = true
+	if in.NodeID <= 0 {
+		writeErr(w, 400, "请先选择服务器，再在这台机器上添加协议")
+		return
+	}
+	if _, err := s.db.GetNode(in.NodeID); err != nil {
+		writeErr(w, 400, "所选服务器不存在")
+		return
+	}
 	if err := s.normalizeInbound(&in); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -841,6 +849,13 @@ func (s *Server) updateInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.ID = cur.ID
+	if in.NodeID <= 0 {
+		in.NodeID = cur.NodeID
+	}
+	if in.NodeID <= 0 {
+		writeErr(w, 400, "入站必须绑定一台服务器")
+		return
+	}
 	if err := s.normalizeInbound(&in); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1171,38 +1186,43 @@ func (s *Server) RepairInbound() error {
 	return nil
 }
 
+func (s *Server) seedInboundForNode(n models.Node) error {
+	existing, err := s.db.ListInboundsForNode(n.ID)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	port := n.Port
+	if port == 0 {
+		port = s.defaultInboundPort()
+	}
+	in := models.Inbound{
+		NodeID:     n.ID,
+		Remark:     n.Name,
+		Tag:        fmt.Sprintf("in-%d", n.ID),
+		Protocol:   "vless",
+		Listen:     "0.0.0.0",
+		Port:       port,
+		Flow:       "xtls-rprx-vision",
+		Dest:       "www.microsoft.com:443",
+		ServerName: "www.microsoft.com",
+		Enabled:    true,
+	}
+	if err := s.normalizeInbound(&in); err != nil {
+		return err
+	}
+	return s.db.SaveInbound(&in)
+}
+
 func (s *Server) ensureNodeInbounds() {
 	nodes, err := s.db.ListNodes()
 	if err != nil {
 		return
 	}
-	base, err := s.db.GetInbound()
-	if err != nil {
-		return
-	}
-	existing, _ := s.db.ListInbounds()
-	has := map[int64]bool{}
-	for _, in := range existing {
-		if in.NodeID > 0 {
-			has[in.NodeID] = true
-		}
-	}
 	for _, n := range nodes {
-		if has[n.ID] {
-			continue
-		}
-		copyIn := *base
-		copyIn.ID = 0
-		copyIn.NodeID = n.ID
-		copyIn.Remark = n.Name
-		copyIn.Tag = fmt.Sprintf("in-%d", n.ID)
-		if n.Port > 0 {
-			copyIn.Port = n.Port
-		}
-		copyIn.Enabled = true
-		if e := s.normalizeInbound(&copyIn); e == nil {
-			_ = s.db.SaveInbound(&copyIn)
-		}
+		_ = s.seedInboundForNode(n)
 	}
 }
 
@@ -1241,19 +1261,28 @@ func (s *Server) SyncXray() error { return s.syncXray() }
 
 func (s *Server) syncXray() error {
 	in, err := s.db.GetInbound()
-	if err != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err := s.repairInbound(in); err != nil {
-		return err
+	if in != nil {
+		if err := s.repairInbound(in); err != nil {
+			return err
+		}
+		_ = s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", ""))
+	} else {
+		_ = s.ensureLocalNode(s.defaultInboundPort(), s.db.GetSetting("public_url", ""))
 	}
-	_ = s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", ""))
+	s.ensureNodeInbounds()
 	_, _ = s.db.BumpConfigRev()
 	local, err := s.db.LocalNode()
 	if err != nil {
 		return nil
 	}
-	cfg, err := nodeconfig.Build(s.db, *local, *in)
+	base := models.Inbound{}
+	if in != nil {
+		base = *in
+	}
+	cfg, err := nodeconfig.Build(s.db, *local, base)
 	if err != nil {
 		return err
 	}
@@ -1261,7 +1290,12 @@ func (s *Server) syncXray() error {
 		return err
 	}
 	if _, err := os.Stat(s.xray.Bin()); err != nil {
-		return nil
+		if bin, e := xray.EnsureBinary(s.xray.Bin()); e == nil {
+			s.xray.SetBin(bin)
+			_ = s.db.SetSetting("xray_path", bin)
+		} else {
+			return fmt.Errorf("本机没有 Xray：%w", e)
+		}
 	}
 	return s.xray.Reload()
 }
@@ -1512,17 +1546,9 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if base, err := s.db.GetInbound(); err == nil {
-		copyIn := *base
-		copyIn.ID = 0
-		copyIn.NodeID = saved.ID
-		copyIn.Remark = saved.Name
-		copyIn.Tag = fmt.Sprintf("in-%d", saved.ID)
-		copyIn.Port = saved.Port
-		copyIn.Enabled = true
-		if e := s.normalizeInbound(&copyIn); e == nil {
-			_ = s.db.SaveInbound(&copyIn)
-		}
+	if err := s.seedInboundForNode(*saved); err != nil {
+		writeErr(w, 500, "节点已登记，但创建入站失败："+err.Error())
+		return
 	}
 	_ = s.syncXray()
 	pub := s.publicBase(r)
@@ -1531,7 +1557,7 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		"node":         saved,
 		"install_hint": install,
 		"panel":        pub,
-		"message":      "节点已登记，并复制了一条 Reality 入站。把安装命令拿到节点机 root 执行后会跑 Xray。",
+		"message":      "服务器已登记。把安装命令拿到那台机器用 root 执行后，再在「入站」里选这台机器添加协议。",
 	})
 }
 
@@ -1716,17 +1742,19 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	needCfg := n.Enabled && (!hb.XrayRunning || hb.ConfigRev == "" || hb.ConfigRev != n.ConfigRev)
 	if needCfg {
-		in, err := s.db.GetInbound()
-		if err == nil {
-			if n.ConfigRev == "" {
-				if rev, e := s.db.BumpConfigRev(); e == nil {
-					n.ConfigRev = rev
-				}
+		s.ensureNodeInbounds()
+		if n.ConfigRev == "" {
+			if rev, e := s.db.BumpConfigRev(); e == nil {
+				n.ConfigRev = rev
 			}
-			if cfg, err := nodeconfig.Build(s.db, *n, *in); err == nil {
-				reply.Config = cfg
-				reply.ConfigRev = n.ConfigRev
-			}
+		}
+		base := models.Inbound{}
+		if in, err := s.db.GetInbound(); err == nil && in != nil {
+			base = *in
+		}
+		if cfg, err := nodeconfig.Build(s.db, *n, base); err == nil {
+			reply.Config = cfg
+			reply.ConfigRev = n.ConfigRev
 		}
 	}
 	writeJSON(w, 200, reply)

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { toastOk, toastErr } from '../toast'
 import { copyText } from '../copy'
@@ -8,7 +8,7 @@ const items = ref([])
 const nodes = ref([])
 const xray = ref({ running: false, path: '', message: '' })
 const error = ref('')
-const nodeFilter = ref(0)
+const selected = ref(0)
 const showForm = ref(false)
 const busy = ref(false)
 const editing = ref(null)
@@ -17,7 +17,7 @@ const empty = () => ({
   id: 0,
   node_id: 0,
   remark: '',
-  tag: 'vless-in',
+  tag: '',
   protocol: 'vless',
   listen: '0.0.0.0',
   port: 443,
@@ -40,9 +40,12 @@ async function load() {
     items.value = ib.items || []
     xray.value = { running: ib.xray_running, path: ib.xray_path, message: ib.xray_message }
     nodes.value = n.items || []
-    if (!form.value.node_id && nodes.value.length) {
+    if (!selected.value && nodes.value.length) {
       const local = nodes.value.find((x) => x.is_local) || nodes.value[0]
-      form.value.node_id = local.id
+      selected.value = local.id
+    }
+    if (selected.value && !nodes.value.some((x) => x.id === selected.value) && nodes.value.length) {
+      selected.value = nodes.value[0].id
     }
   } catch (e) {
     error.value = e.message
@@ -50,24 +53,29 @@ async function load() {
   }
 }
 
-const filtered = computed(() => {
-  if (!nodeFilter.value) return items.value
-  return items.value.filter((i) => i.node_id === nodeFilter.value || i.node_id === 0)
+const current = computed(() => nodes.value.find((n) => n.id === selected.value) || null)
+const filtered = computed(() => items.value.filter((i) => i.node_id === selected.value))
+
+watch(selected, (id) => {
+  if (id && form.value) form.value.node_id = id
 })
 
-function nodeName(id) {
-  if (!id) return '全部节点'
-  return nodes.value.find((n) => n.id === id)?.name || '#' + id
+function statusOf(n) {
+  if (n.is_local) return n.xray_running ? 'Xray 运行中' : n.xray_message || 'Xray 未启动'
+  if (!n.online) return 'Agent 离线'
+  return n.xray_running ? 'Xray 运行中' : n.xray_message || 'Xray 未启动'
 }
 
 function openAdd() {
-  const n = nodes.value.find((x) => x.is_local) || nodes.value[0]
-  form.value = empty()
-  if (n) {
-    form.value.node_id = n.id
-    form.value.port = n.port || 443
-    form.value.remark = n.name
+  if (!current.value) {
+    toastErr('先去「服务器」添加机器，并在节点机上安装 Agent')
+    return
   }
+  form.value = empty()
+  form.value.node_id = current.value.id
+  form.value.port = current.value.port || 443
+  form.value.remark = current.value.name
+  form.value.tag = 'in-' + current.value.id
   editing.value = null
   showForm.value = true
 }
@@ -79,12 +87,16 @@ function openEdit(row) {
 }
 
 async function save() {
+  if (!form.value.node_id) {
+    toastErr('必须选择服务器')
+    return
+  }
   busy.value = true
   try {
     const payload = { ...form.value, node_id: Number(form.value.node_id) || 0, port: Number(form.value.port) || 443 }
     const r = editing.value ? await api.updateInbound(editing.value, payload) : await api.createInbound(payload)
     if (r.warning) toastErr('已保存，但 Xray 未起来：' + r.warning)
-    else toastOk(editing.value ? '入站已更新并下发' : '入站已添加并下发到节点')
+    else toastOk(editing.value ? '已更新并下发到这台服务器' : '已在这台服务器上添加协议并下发')
     showForm.value = false
     await load()
   } catch (e) {
@@ -105,10 +117,10 @@ async function toggle(row) {
 }
 
 async function regen(row) {
-  if (!confirm('重新生成该入站 Reality 密钥？订阅里的 pbk/sid 会变，客户端要重新拉订阅。')) return
+  if (!confirm('重新生成该入站 Reality 密钥？客户端必须重新拉订阅。')) return
   try {
     const r = await api.regenInboundKeys(row.id)
-    toastOk(r.warning ? '密钥已更新，但 Xray 未起来：' + r.warning : '密钥已更新')
+    toastOk(r.warning ? '密钥已更新，但 Xray 未起来：' + r.warning : '密钥已更新并下发')
     await load()
   } catch (e) {
     toastErr(e)
@@ -142,11 +154,11 @@ async function reloadXray() {
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
       <div>
         <h2 class="text-xl font-semibold">入站</h2>
-        <p class="text-sm text-black/45 mt-1">每条入站绑定一个节点。远程节点由 agent 拉配置并跑 Xray，订阅用节点公网地址:端口。</p>
+        <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加协议。远程机由 Agent 拉配置跑官方 Xray。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn-ghost" type="button" @click="reloadXray">重载本机 Xray</button>
-        <button class="btn-primary" type="button" @click="openAdd">添加入站</button>
+        <button class="btn-primary" type="button" @click="openAdd" :disabled="!current">+ 添加入站</button>
       </div>
     </div>
 
@@ -156,65 +168,88 @@ async function reloadXray() {
     </div>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
-    <div class="flex items-center gap-3 mb-3">
-      <label class="text-sm text-black/50">节点</label>
-      <select class="input max-w-xs" v-model.number="nodeFilter">
-        <option :value="0">全部节点</option>
-        <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }} {{ n.is_local ? '(本机)' : '' }}</option>
-      </select>
-    </div>
+    <div class="flex gap-4 items-start min-h-[420px]">
+      <aside class="w-[240px] shrink-0 card overflow-hidden">
+        <div class="px-3 py-2.5 text-xs text-black/45 border-b border-black/5">服务器</div>
+        <button
+          v-for="n in nodes"
+          :key="n.id"
+          type="button"
+          class="w-full text-left px-3 py-3 border-b border-black/5 hover:bg-black/[0.03]"
+          :class="selected === n.id ? 'bg-[#e6f4ff] border-l-2 border-l-[#1677ff]' : ''"
+          @click="selected = n.id"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-medium text-sm truncate">{{ n.name }}</span>
+            <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="n.online || n.is_local ? 'bg-emerald-500' : 'bg-black/20'" />
+          </div>
+          <div class="text-[11px] text-black/40 mt-0.5 truncate">{{ n.public_host || n.host || '未上报 IP' }}</div>
+          <div class="text-[11px] mt-0.5" :class="n.xray_running || n.is_local ? 'text-emerald-700' : 'text-amber-700'">{{ statusOf(n) }}</div>
+        </button>
+        <div v-if="!nodes.length" class="px-3 py-8 text-xs text-black/40 text-center">还没有服务器。先去「服务器」添加并安装 Agent。</div>
+      </aside>
 
-    <div class="card table-wrap">
-      <table class="ui min-w-[960px]">
-        <thead>
-          <tr>
-            <th>启用</th>
-            <th>备注</th>
-            <th>节点</th>
-            <th>端口</th>
-            <th>协议</th>
-            <th>客户端</th>
-            <th>SNI</th>
-            <th>密钥</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in filtered" :key="row.id">
-            <td>
-              <input type="checkbox" :checked="row.enabled" @change="toggle(row)" />
-            </td>
-            <td>
-              <div class="font-medium">{{ row.remark || row.tag }}</div>
-              <div class="text-[11px] text-black/40 font-mono">{{ row.tag }}</div>
-            </td>
-            <td>
-              <div>{{ nodeName(row.node_id) }}</div>
-              <div class="text-[11px] text-black/40">{{ row.listen }}</div>
-            </td>
-            <td class="font-mono">{{ row.port }}</td>
-            <td>
-              <span class="badge bg-sky-50 text-sky-700">{{ (row.protocol || 'vless').toUpperCase() }}+Reality</span>
-            </td>
-            <td>{{ row.client_num ?? 0 }}</td>
-            <td class="text-xs">{{ row.server_name }}</td>
-            <td>
-              <span class="badge" :class="row.keys_ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'">
-                {{ row.keys_ok ? '正常' : '无效' }}
-              </span>
-            </td>
-            <td class="text-right whitespace-nowrap space-x-1">
-              <button class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
-              <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
-              <button class="btn-ghost text-xs" type="button" @click="regen(row)">换密钥</button>
-              <button class="btn-danger text-xs" type="button" @click="remove(row)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="!filtered.length">
-            <td colspan="9" class="text-center text-black/40 py-10">还没有入站。点右上角「添加入站」，并选择节点。</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="flex-1 min-w-0">
+        <div v-if="current" class="flex items-center justify-between mb-3">
+          <div>
+            <div class="font-medium">{{ current.name }} <span class="text-xs text-black/40 font-normal">{{ current.is_local ? '面板本机' : 'Agent' }}</span></div>
+            <div class="text-xs text-black/45 mt-0.5">{{ current.public_host || current.host || '未上报 IP' }} · 在这台机器上添加 VLESS+Reality</div>
+          </div>
+        </div>
+
+        <div class="card table-wrap">
+          <table class="ui min-w-[860px]">
+            <thead>
+              <tr>
+                <th>启用</th>
+                <th>备注</th>
+                <th>端口</th>
+                <th>协议</th>
+                <th>客户端</th>
+                <th>SNI</th>
+                <th>密钥</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in filtered" :key="row.id">
+                <td>
+                  <input type="checkbox" :checked="row.enabled" @change="toggle(row)" />
+                </td>
+                <td>
+                  <div class="font-medium">{{ row.remark || row.tag }}</div>
+                  <div class="text-[11px] text-black/40 font-mono">{{ row.tag }} · {{ row.listen }}</div>
+                </td>
+                <td class="font-mono">{{ row.port }}</td>
+                <td>
+                  <span class="badge bg-sky-50 text-sky-700">{{ (row.protocol || 'vless').toUpperCase() }}+Reality</span>
+                </td>
+                <td>{{ row.client_num ?? 0 }}</td>
+                <td class="text-xs">{{ row.server_name }}</td>
+                <td>
+                  <span class="badge" :class="row.keys_ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'">
+                    {{ row.keys_ok ? '正常' : '无效' }}
+                  </span>
+                </td>
+                <td class="text-right whitespace-nowrap space-x-1">
+                  <button class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
+                  <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
+                  <button class="btn-ghost text-xs" type="button" @click="regen(row)">换密钥</button>
+                  <button class="btn-danger text-xs" type="button" @click="remove(row)">删除</button>
+                </td>
+              </tr>
+              <tr v-if="current && !filtered.length">
+                <td colspan="8" class="text-center text-black/40 py-10">
+                  这台服务器还没有协议。点右上角「添加入站」。
+                </td>
+              </tr>
+              <tr v-if="!current">
+                <td colspan="8" class="text-center text-black/40 py-10">先在左边选一台服务器。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div v-if="showForm" class="fixed inset-0 z-40 bg-black/40 flex items-start justify-center overflow-y-auto p-6" @click.self="showForm = false">
@@ -225,7 +260,7 @@ async function reloadXray() {
         </div>
         <div class="grid md:grid-cols-2 gap-3">
           <div class="md:col-span-2">
-            <label class="label">节点（这条入站跑在哪台机器）</label>
+            <label class="label">跑在哪台服务器</label>
             <select class="input" v-model.number="form.node_id" required>
               <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }} {{ n.is_local ? '· 本机' : '· Agent' }} · {{ n.public_host || n.host || '未上报 IP' }}</option>
             </select>
@@ -236,7 +271,7 @@ async function reloadXray() {
           </div>
           <div>
             <label class="label">Tag</label>
-            <input class="input font-mono text-xs" v-model="form.tag" />
+            <input class="input font-mono text-xs" v-model="form.tag" placeholder="自动" />
           </div>
           <div>
             <label class="label">监听</label>
@@ -256,20 +291,16 @@ async function reloadXray() {
           </div>
           <div>
             <label class="label">Flow</label>
-            <input class="input" v-model="form.flow" />
+            <select class="input" v-model="form.flow">
+              <option value="xtls-rprx-vision">xtls-rprx-vision（推荐）</option>
+              <option value="">无</option>
+            </select>
           </div>
           <div>
             <label class="label">Short ID</label>
             <input class="input font-mono text-xs" v-model="form.short_id" placeholder="留空自动生成" />
           </div>
-          <div class="md:col-span-2">
-            <label class="label">Private Key</label>
-            <input class="input font-mono text-xs" v-model="form.private_key" placeholder="留空自动生成" />
-          </div>
-          <div class="md:col-span-2">
-            <label class="label">Public Key（客户端 pbk）</label>
-            <input class="input font-mono text-xs" v-model="form.public_key" placeholder="留空自动生成" />
-          </div>
+          <div class="md:col-span-2 text-xs text-black/40">密钥留空会自动生成。客户端用订阅，不必手填。</div>
         </div>
         <label class="flex items-center gap-2 text-sm">
           <input type="checkbox" v-model="form.enabled" />

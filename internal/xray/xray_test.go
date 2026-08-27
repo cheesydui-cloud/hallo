@@ -77,4 +77,9 @@ func TestBuildFullCustomOutbound(t *testing.T) {
 	if rules[0].(map[string]any)["outboundTag"] != "warp" {
 		t.Fatalf("default outbound want warp, got %#v", rules)
 	}
+	inb := cfg["inbounds"].([]any)[0].(map[string]any)
+	sniff := inb["sniffing"].(map[string]any)
+	if sniff["routeOnly"] != true {
+		t.Fatalf("Vision sniffing must be routeOnly, got %#v", sniff)
+	}
 }

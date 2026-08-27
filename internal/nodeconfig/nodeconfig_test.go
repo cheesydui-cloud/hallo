@@ -16,14 +16,6 @@ func TestEndpointsAndRelay(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Close() })
 
-	in := models.Inbound{
-		Port: 443, Flow: "xtls-rprx-vision", Dest: "www.microsoft.com:443",
-		ServerName: "www.microsoft.com", PublicKey: "pub", ShortID: "abcd",
-		PrivateKey: "priv", Protocol: "vless", Listen: "0.0.0.0",
-	}
-	if err := d.SaveInbound(&in); err != nil {
-		t.Fatal(err)
-	}
 	localID, err := d.CreateNode(models.Node{Name: "本机", Token: "t1", PublicHost: "1.1.1.1", Port: 443, IsLocal: true, Enabled: true, Subscribe: true})
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +25,23 @@ func TestEndpointsAndRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	inLocal := models.Inbound{
+		NodeID: localID, Port: 443, Flow: "xtls-rprx-vision", Dest: "www.microsoft.com:443",
+		ServerName: "www.microsoft.com", PublicKey: "pub", ShortID: "abcd",
+		PrivateKey: "priv", Protocol: "vless", Listen: "0.0.0.0", Enabled: true, Tag: "in-local",
+	}
+	if err := d.SaveInbound(&inLocal); err != nil {
+		t.Fatal(err)
+	}
+	inHK := models.Inbound{
+		NodeID: hkID, Port: 443, Flow: "xtls-rprx-vision", Dest: "www.microsoft.com:443",
+		ServerName: "www.microsoft.com", PublicKey: "pub2", ShortID: "ef01",
+		PrivateKey: "priv2", Protocol: "vless", Listen: "0.0.0.0", Enabled: true, Tag: "in-hk",
+	}
+	if err := d.SaveInbound(&inHK); err != nil {
+		t.Fatal(err)
+	}
+	in := inLocal
 	u := models.User{Email: "a@b.c", UUID: "uuid-1", SubToken: "sub", Enabled: true}
 	uid, err := d.CreateUser(u)
 	if err != nil {
@@ -74,6 +83,9 @@ func TestEndpointsAndRelay(t *testing.T) {
 	lcfg, err := Build(d, *local, in)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := len(lcfg["inbounds"].([]any)); got != 1 {
+		t.Fatalf("local node should only have its own inbound, got %d", got)
 	}
 	inb := lcfg["inbounds"].([]any)[0].(map[string]any)
 	clients := inb["settings"].(map[string]any)["clients"].([]map[string]any)

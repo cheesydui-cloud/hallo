@@ -629,7 +629,7 @@ func (d *DB) ListInboundsForNode(nodeID int64) ([]models.Inbound, error) {
 	}
 	var out []models.Inbound
 	for _, in := range all {
-		if in.NodeID == nodeID || in.NodeID == 0 {
+		if in.NodeID == nodeID {
 			out = append(out, in)
 		}
 	}
@@ -930,6 +930,9 @@ func (d *DB) DeleteNode(id int64) error {
 	}
 	if n.IsLocal {
 		return fmt.Errorf("本机节点不能删除")
+	}
+	if _, err = d.SQL.Exec(`DELETE FROM inbounds WHERE node_id = ?`, id); err != nil {
+		return err
 	}
 	_, err = d.SQL.Exec(`DELETE FROM nodes WHERE id = ?`, id)
 	return err

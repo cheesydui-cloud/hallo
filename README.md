@@ -1,17 +1,21 @@
 # Hallo
 
-自研多节点代理面板。独立实现，不依赖任何第三方商业面板的激活码或二进制。Xray **不是**内嵌在面板里的，安装脚本和 Agent 会拉取官方 [Xray-core](https://github.com/XTLS/Xray-core)。
+自研多节点代理面板。独立实现，不依赖任何第三方商业面板的激活码或二进制。面板和 Agent 会拉取官方 [Xray-core](https://github.com/XTLS/Xray-core) 到本机，由进程拉起，不是把核心编进 Go 二进制。
 
-当前版本能做的事：
+**用法（按这个顺序）：**
 
-- 浏览器初始化管理员；左侧栏：**总览 / 入站 / 出站 / 客户端 / 节点 / 套餐 / 设置**
-- **入站按节点**：每条 VLESS+Reality 绑定一台机器（本机或 Agent）
-- **出站**：freedom 直连、blackhole、VLESS 链式、SOCKS/HTTP 上游；可设默认出站
-- 用户（客户端）可选节点；订阅按节点公网地址出多条链接（通用 VLESS + Clash YAML）
-- 链式转发：入口节点把流量转到另一台节点再出网
-- Reality 密钥由面板用 X25519 生成，不依赖 `xray x25519`
+1. **服务器** — 登记 A/B/C/D，把安装命令拿到那台机用 root 执行，等到「在线」且 Xray 运行中  
+2. **入站** — 左边点那台服务器，右边添加 VLESS+Reality（端口默认 443）  
+3. **出站** — 默认直连，不用改  
+4. **客户端** — 加一个用户，复制订阅。没有用户就没有 UUID，节点一定不通
+
+当前版本：
+
+- 左侧栏：总览 / 服务器 / 入站 / 出站 / 客户端 / 套餐 / 设置
+- 入站页：先选服务器，再在这台机器上加协议；每台机自己的 Reality 密钥
+- 出站：freedom 直连、blackhole、VLESS 链式、SOCKS/HTTP
+- 订阅按该服务器公网地址出 VLESS / Clash
 - 面板自更新、Agent 一键安装 / 推送更新
-- CLI：`hallo serve` / `hallo plan add` / `hallo user add`
 
 流量精确 Stats 仍是下一期。
 
@@ -32,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 **指定版本：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.3.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.4.0
 ```
 
 **自定义面板端口 / 公网地址：**
@@ -62,19 +66,18 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 钉死版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.3.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.4.0
 ```
 
 ---
 
-## 节点怎么用（订阅到底连哪台）
+## 服务器怎么用（订阅到底连哪台）
 
-面板地址（`:18080`）**不是**代理入口。客户端连的是节点的 **公网 IP/域名 + 入站端口（默认 443）**。
+面板地址（`:18080`）**不是**代理入口。客户端连的是那台服务器的 **公网 IP/域名 + 入站端口（默认 443）**。
 
 1. 设置里填好面板 **公网地址**（节点机能访问）
-2. **节点** 页会出现「本机」。把本机公网 IP 填进该节点的公网地址（初始化时若已填面板公网地址会自动带上）
-3. 再加远程节点：名字 + 公网 IP + 端口。链式转发可选「转到哪一台」
-4. 复制安装命令，到**节点机 root** 执行：
+2. **服务器** 页会出现「本机」。把本机公网 IP 填进公网地址
+3. 再加远程机器：名字 + 公网 IP。复制安装命令，到**那台机 root** 执行：
 
 ```bash
 curl -fsSL 'http://面板IP:18080/install/agent.sh?token=节点token' | sh
@@ -82,8 +85,8 @@ curl -fsSL 'http://面板IP:18080/install/agent.sh?token=节点token' | sh
 
 成功时节点机会打印 `hallo-agent 已安装并在 systemd 中运行`，并尽量安装官方 Xray。面板里该节点变成「在线」，Agent 心跳会拉 Xray 配置并启动。
 
-5. **用户** 页可不选节点（订阅包含全部启用节点），或只勾要用的节点
-6. 复制用户的「订阅」给客户端。Clash 订阅里每台节点一条，可在客户端里选
+5. 打开 **入站**：左边点刚上线的服务器，确认有一条 VLESS+Reality；没有就点「添加入站」
+6. **客户端** 加用户，复制订阅。不选服务器 = 订阅包含全部启用机器
 
 不要用前台的 `hallo-agent run`：关掉终端进程就没了。
 
@@ -140,7 +143,7 @@ HALLO_DEV=1 ./bin/hallo serve --listen :18080 --data data
 发版：
 
 ```bash
-sh scripts/release.sh v0.3.0
+sh scripts/release.sh v0.4.0
 ```
 
 打 Git 标签 `v*` 会触发 GitHub Actions，自动出 Release 附件。

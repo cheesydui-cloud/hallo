@@ -255,6 +255,16 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 		t.Fatalf("nodes %#v", nodes.Items)
 	}
 
+	badIn, _ := json.Marshal(map[string]any{"remark": "no-node", "port": 443})
+	badRes, err := http.DefaultClient.Do(cookieReq(http.MethodPost, ts.URL+"/api/inbounds", badIn, cookies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if badRes.StatusCode == 200 {
+		t.Fatal("inbound without node_id should fail")
+	}
+	badRes.Body.Close()
+
 	createBody, _ := json.Marshal(map[string]any{
 		"name": "洛杉矶", "public_host": "8.8.8.8", "port": 443,
 	})

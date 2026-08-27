@@ -433,12 +433,14 @@ func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[s
 				"xver":        0,
 				"serverNames": []string{sni},
 				"privateKey":  in.PrivateKey,
-				"shortIds":    []string{in.ShortID},
+				"shortIds":    []string{"", in.ShortID},
 			},
 		},
+		// Vision + sniffing 改写目标会把连接掐断；routeOnly 只给路由看，不改出口。
 		"sniffing": map[string]any{
 			"enabled":      true,
-			"destOverride": []string{"http", "tls", "quic"},
+			"destOverride": []string{"http", "tls"},
+			"routeOnly":    true,
 		},
 	}
 }

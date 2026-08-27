@@ -99,6 +99,12 @@ func serve(args []string) {
 	}
 
 	bin := database.GetSetting("xray_path", xray.DefaultBin(cfg.DataDir))
+	if ensured, err := xray.EnsureBinary(bin); err == nil {
+		bin = ensured
+		_ = database.SetSetting("xray_path", bin)
+	} else {
+		log.Printf("准备 Xray 失败：%v（仍启动面板，入站页会提示）", err)
+	}
 	xm := xray.New(bin, cfg.XrayConfigPath())
 	webFS, err := iofs.Sub(web.Dist, "dist")
 	if err != nil {

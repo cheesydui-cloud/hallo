@@ -131,10 +131,10 @@ function installCmd(n) {
   <div>
     <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
       <div>
-        <h2 class="text-xl font-semibold">节点</h2>
+        <h2 class="text-xl font-semibold">服务器</h2>
         <p class="text-black/45 text-sm mt-1 max-w-2xl">
-          每台节点机都会跑官方 Xray。订阅链接用的是节点的<strong>公网地址 + 入站端口</strong>，不是面板端口。
-          链式转发：入口节点把流量转到另一台节点再出网。
+          先把机器登记进来，复制安装命令到那台机用 root 执行。Agent 会装官方 Xray 并心跳。
+          然后再去「入站」，选这台服务器添加 VLESS。订阅用的是<strong>这台机的公网 IP + 入站端口</strong>，不是面板 18080。
         </p>
       </div>
       <button class="btn-primary" @click="pushAll">一键推送全部 Agent</button>
