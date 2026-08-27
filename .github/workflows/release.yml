@@ -62,11 +62,6 @@ jobs:
 
             ### Agent 更新
 
-            打开 **节点 → 推送更新**（或「一键推送全部 Agent」）。节点下次心跳从面板 `/download/agent/<arch>` 拉新包并重启。
+            打开 **服务器 → 推送更新**（或「一键推送全部 Agent」）。节点下次心跳从面板 `/download/agent/<arch>` 拉新包并重启。
 
-            给管理员加不限量套餐：
-
-            ```bash
-            hallo plan add --name admin --limit 0 --days 0 --note "admin自用"
-            hallo user add --email admin --plan admin --remark "自己用"
-            ```
+            用法：服务器装 Agent → 协议页选这台机添加节点 → 点「复制」导入客户端。初始化已有默认 UUID。

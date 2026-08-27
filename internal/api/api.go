@@ -236,6 +236,10 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "初始化入站失败："+err.Error())
 		return
 	}
+	if err := s.ensureDefaultUser(); err != nil {
+		writeErr(w, 500, "初始化默认客户端失败："+err.Error())
+		return
+	}
 	pub := strings.TrimSpace(body.PublicURL)
 	if pub == "" {
 		host, _, _ := net.SplitHostPort(r.Host)
@@ -576,7 +580,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.NodeIDs = body.NodeIDs
-	_ = s.syncXray()
+	_ = s.afterUserChange()
 	writeJSON(w, 200, u)
 }
 
@@ -639,7 +643,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cur.NodeIDs, _ = s.db.UserNodeIDs(cur.ID)
 	}
-	_ = s.syncXray()
+	_ = s.afterUserChange()
 	writeJSON(w, 200, cur)
 }
 
@@ -676,7 +680,7 @@ func (s *Server) resetUUID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.syncXray()
+	_ = s.afterUserChange()
 	writeJSON(w, 200, u)
 }
 
@@ -686,11 +690,16 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "无效 id")
 		return
 	}
+	users, _ := s.db.ListUsers()
+	if len(users) <= 1 {
+		writeErr(w, 400, "至少保留一个客户端，VLESS / VMess 需要 UUID")
+		return
+	}
 	if err := s.db.DeleteUser(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.syncXray()
+	_ = s.afterUserChange()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -783,6 +792,7 @@ func (s *Server) inboundShareLink(in models.Inbound) (string, string) {
 	if proto == "shadowsocks" || proto == "ss" {
 		return sub.ShareLink(ep, models.User{Email: name, Remark: name}, name), host
 	}
+	_ = s.ensureDefaultUser()
 	users, _ := s.db.ActiveUsers()
 	if len(users) == 0 {
 		return "", host
@@ -891,14 +901,50 @@ func (s *Server) afterInboundSave(in *models.Inbound) error {
 			_ = s.db.UpdateNode(*n)
 		}
 	}
-	if local, e := s.db.LocalNode(); e == nil && in.NodeID != local.ID {
-		_, _ = s.db.BumpConfigRev()
-		return nil
+	return s.notifyNode(in.NodeID)
+}
+
+func (s *Server) notifyNode(nodeID int64) error {
+	local, err := s.db.LocalNode()
+	if err != nil || nodeID <= 0 || nodeID == local.ID {
+		return s.syncXray()
 	}
+	rev := time.Now().UTC().Format("20060102150405")
+	return s.db.SetNodeConfigRev(nodeID, rev)
+}
+
+func (s *Server) afterUserChange() error {
+	_, _ = s.db.BumpConfigRev()
 	return s.syncXray()
 }
 
+func (s *Server) ensureDefaultUser() error {
+	users, err := s.db.ListUsers()
+	if err != nil {
+		return err
+	}
+	if len(users) > 0 {
+		return nil
+	}
+	tok, err := auth.RandomToken(16)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.CreateUser(models.User{
+		Email:    "default",
+		Remark:   "默认客户端",
+		UUID:     uuid.NewString(),
+		Enabled:  true,
+		SubToken: tok,
+	})
+	if err != nil && !db.IsUniqueErr(err) {
+		return err
+	}
+	return nil
+}
+
 func (s *Server) listInbounds(w http.ResponseWriter, r *http.Request) {
+	_ = s.ensureDefaultUser()
 	items, err := s.db.ListInbounds()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -1005,16 +1051,16 @@ func (s *Server) deleteInbound(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "无效 id")
 		return
 	}
-	all, _ := s.db.ListInbounds()
-	if len(all) <= 1 {
-		writeErr(w, 400, "至少保留一条入站")
+	cur, err := s.db.GetInboundByID(id)
+	if err != nil {
+		writeErr(w, 404, "入站不存在")
 		return
 	}
 	if err := s.db.DeleteInbound(id); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	_ = s.syncXray()
+	_ = s.notifyNode(cur.NodeID)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -1347,6 +1393,7 @@ func (s *Server) RepairInbound() error {
 		return err
 	}
 	s.ensureNodeInbounds()
+	_ = s.ensureDefaultUser()
 	return nil
 }
 
@@ -1449,7 +1496,7 @@ func (s *Server) syncXray() error {
 	}
 	s.ensureNodeInbounds()
 	s.repairAllInbounds()
-	_, _ = s.db.BumpConfigRev()
+	_ = s.ensureDefaultUser()
 	local, err := s.db.LocalNode()
 	if err != nil {
 		return nil
@@ -1735,14 +1782,14 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "节点已登记，但创建入站失败："+err.Error())
 		return
 	}
-	_ = s.syncXray()
+	_ = s.notifyNode(saved.ID)
 	pub := s.publicBase(r)
 	install := "curl -fsSL '" + pub + "/install/agent.sh?token=" + saved.Token + "' | sh"
 	writeJSON(w, 200, map[string]any{
 		"node":         saved,
 		"install_hint": install,
 		"panel":        pub,
-		"message":      "服务器已登记。把安装命令拿到那台机器用 root 执行后，再在「入站」里选这台机器添加协议。",
+		"message":      "服务器已登记。把安装命令拿到那台机器用 root 执行，等在线后再去「协议」复制链接。",
 	})
 }
 
@@ -1812,7 +1859,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	_ = s.syncXray()
+	_ = s.notifyNode(cur.ID)
 	writeJSON(w, 200, cur)
 }
 

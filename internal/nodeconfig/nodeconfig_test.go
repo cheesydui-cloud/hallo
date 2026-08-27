@@ -6,10 +6,9 @@ import (
 
 	"hallo/internal/db"
 	"hallo/internal/models"
-	"hallo/internal/xray"
 )
 
-func TestEndpointsAndRelay(t *testing.T) {
+func TestEndpointsPerNode(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -20,8 +19,7 @@ func TestEndpointsAndRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relayTo := localID
-	hkID, err := d.CreateNode(models.Node{Name: "香港", Token: "t2", PublicHost: "2.2.2.2", Port: 443, Enabled: true, Subscribe: true, RelayNodeID: &relayTo, RelayUUID: "11111111-1111-1111-1111-111111111111"})
+	hkID, err := d.CreateNode(models.Node{Name: "香港", Token: "t2", PublicHost: "2.2.2.2", Port: 8443, Enabled: true, Subscribe: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,14 +32,13 @@ func TestEndpointsAndRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	inHK := models.Inbound{
-		NodeID: hkID, Port: 443, Flow: "xtls-rprx-vision", Dest: "www.microsoft.com:443",
+		NodeID: hkID, Port: 8443, Flow: "xtls-rprx-vision", Dest: "www.microsoft.com:443",
 		ServerName: "www.microsoft.com", PublicKey: "pub2", ShortID: "ef01",
 		PrivateKey: "priv2", Protocol: "vless", Listen: "0.0.0.0", Enabled: true, Tag: "in-hk",
 	}
 	if err := d.SaveInbound(&inHK); err != nil {
 		t.Fatal(err)
 	}
-	in := inLocal
 	u := models.User{Email: "a@b.c", UUID: "uuid-1", SubToken: "sub", Enabled: true}
 	uid, err := d.CreateUser(u)
 	if err != nil {
@@ -49,7 +46,7 @@ func TestEndpointsAndRelay(t *testing.T) {
 	}
 	u.ID = uid
 
-	eps, err := Endpoints(d, u, in, "9.9.9.9")
+	eps, err := Endpoints(d, u, inLocal, "9.9.9.9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,42 +58,37 @@ func TestEndpointsAndRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.NodeIDs = []int64{hkID}
-	eps, err = Endpoints(d, u, in, "")
+	eps, err = Endpoints(d, u, inLocal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(eps) != 1 || eps[0].Host != "2.2.2.2" {
+	if len(eps) != 1 || eps[0].Host != "2.2.2.2" || eps[0].Port != 8443 {
 		t.Fatalf("restricted endpoints %#v", eps)
 	}
 
 	hk, _ := d.GetNode(hkID)
-	cfg, err := Build(d, *hk, in)
+	cfg, err := Build(d, *hk, inLocal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outs := cfg["outbounds"].([]any)
-	first := outs[0].(map[string]any)
-	if first["tag"] != "relay" {
-		t.Fatalf("expected relay outbound, got %#v", first)
+	if got := len(cfg["inbounds"].([]any)); got != 1 {
+		t.Fatalf("hk node should only have its own inbound, got %d", got)
 	}
+	inb := cfg["inbounds"].([]any)[0].(map[string]any)
+	if inb["port"] != 8443 && inb["port"] != float64(8443) {
+		t.Fatalf("hk inbound port %#v", inb["port"])
+	}
+	clients := inb["settings"].(map[string]any)["clients"].([]map[string]any)
+	if len(clients) != 1 || clients[0]["id"] != "uuid-1" {
+		t.Fatalf("clients %#v", clients)
+	}
+
 	local, _ := d.GetNode(localID)
-	lcfg, err := Build(d, *local, in)
+	lcfg, err := Build(d, *local, inLocal)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := len(lcfg["inbounds"].([]any)); got != 1 {
 		t.Fatalf("local node should only have its own inbound, got %d", got)
 	}
-	inb := lcfg["inbounds"].([]any)[0].(map[string]any)
-	clients := inb["settings"].(map[string]any)["clients"].([]map[string]any)
-	found := false
-	for _, c := range clients {
-		if c["id"] == "11111111-1111-1111-1111-111111111111" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("relay uuid missing on target: %#v", clients)
-	}
-	_ = xray.ValidRealityKey
 }

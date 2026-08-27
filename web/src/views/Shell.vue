@@ -9,13 +9,10 @@ const ready = ref(false)
 const version = ref('')
 
 const nav = [
-  { to: '/', label: '总览', icon: '▣' },
   { to: '/nodes', label: '服务器', icon: '⬡' },
-  { to: '/inbounds', label: '入站', icon: '↓' },
-  { to: '/outbounds', label: '出站', icon: '↑' },
+  { to: '/inbounds', label: '协议', icon: '↓' },
   { to: '/users', label: '客户端', icon: '◉' },
-  { to: '/plans', label: '套餐', icon: '▤' },
-  { to: '/settings', label: '面板设置', icon: '⚙' },
+  { to: '/settings', label: '设置', icon: '⚙' },
 ]
 
 onMounted(async () => {
@@ -44,7 +41,7 @@ async function logout() {
     <aside class="w-[220px] shrink-0 bg-[#001529] text-white flex flex-col min-h-screen">
       <div class="px-5 py-5 border-b border-white/10">
         <div class="text-lg font-semibold tracking-wide">Hallo</div>
-        <div class="text-[11px] text-white/45 mt-1">选服务器 · 加协议</div>
+        <div class="text-[11px] text-white/45 mt-1">选服务器 · 加协议 · 复制链接</div>
       </div>
       <nav class="flex-1 py-3">
         <router-link

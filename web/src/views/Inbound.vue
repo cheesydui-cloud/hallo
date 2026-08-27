@@ -150,7 +150,7 @@ function extraOf(row) {
 
 function openAdd() {
   if (!current.value) {
-    toastErr('先去「服务器」添加机器，并在节点机上安装 Agent')
+    toastErr('先去「服务器」添加机器，远程机要先装 Agent')
     return
   }
   form.value = empty()
@@ -183,7 +183,7 @@ async function save() {
     }
     const r = editing.value ? await api.updateInbound(editing.value, payload) : await api.createInbound(payload)
     if (r.warning) toastErr('已保存，但 Xray 未起来：' + r.warning)
-    else toastOk(editing.value ? '已更新并下发到这台服务器' : '已在这台服务器上添加协议并下发')
+    else toastOk(editing.value ? '已更新并下发到这台服务器' : '已添加协议并下发到这台服务器')
     showForm.value = false
     await load()
   } catch (e) {
@@ -246,7 +246,7 @@ function isReality(row) {
 
 function copyShare(row) {
   if (!row.share_link) {
-    toastErr('还没有可复制的链接。先去「客户端」加一个用户，再回来复制。')
+    toastErr('还没有可复制的链接。刷新页面，或到「客户端」确认已有 UUID。')
     return
   }
   if (!row.share_host) {
@@ -261,12 +261,12 @@ function copyShare(row) {
   <div>
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
       <div>
-        <h2 class="text-xl font-semibold">入站</h2>
-        <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加 VLESS / VMess / Shadowsocks。同一台机端口不能重复。</p>
+        <h2 class="text-xl font-semibold">协议</h2>
+        <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加 VLESS / VMess / Shadowsocks，点「复制」导入客户端。同一台机端口不能重复。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn-ghost" type="button" @click="reloadXray" :disabled="!current">重启这台 Xray</button>
-        <button class="btn-primary" type="button" @click="openAdd" :disabled="!current">+ 添加入站</button>
+        <button class="btn-primary" type="button" @click="openAdd" :disabled="!current">+ 添加协议</button>
       </div>
     </div>
 
@@ -341,8 +341,6 @@ function copyShare(row) {
                 </td>
                 <td class="text-right whitespace-nowrap space-x-1">
                   <button class="btn-primary text-xs" type="button" @click="copyShare(row)">复制</button>
-                  <button v-if="row.public_key" class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
-                  <button v-if="row.password" class="btn-ghost text-xs" type="button" @click="copyText(row.password, '已复制密码')">密码</button>
                   <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
                   <button v-if="isReality(row)" class="btn-ghost text-xs" type="button" @click="regen(row)">换密钥</button>
                   <button class="btn-danger text-xs" type="button" @click="remove(row)">删除</button>
@@ -350,7 +348,7 @@ function copyShare(row) {
               </tr>
               <tr v-if="current && !filtered.length">
                 <td colspan="8" class="text-center text-black/40 py-10">
-                  这台服务器还没有协议。点右上角「添加入站」，可选 VLESS、VMess 或 Shadowsocks。
+                  这台服务器还没有协议。点右上角「添加协议」。
                 </td>
               </tr>
               <tr v-if="!current">
@@ -365,7 +363,7 @@ function copyShare(row) {
     <div v-if="showForm" class="fixed inset-0 z-40 bg-black/40 flex items-start justify-center overflow-y-auto p-6" @click.self="showForm = false">
       <form class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 space-y-4 my-8" @submit.prevent="save">
         <div class="flex items-center justify-between">
-          <h3 class="text-lg font-semibold">{{ editing ? '编辑入站' : '添加入站' }}</h3>
+          <h3 class="text-lg font-semibold">{{ editing ? '编辑协议' : '添加协议' }}</h3>
           <button class="text-black/40" type="button" @click="showForm = false">×</button>
         </div>
         <div class="grid md:grid-cols-2 gap-3">

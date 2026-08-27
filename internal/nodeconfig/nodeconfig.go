@@ -1,7 +1,6 @@
 package nodeconfig
 
 import (
-	"fmt"
 	"net"
 	"strings"
 
@@ -69,63 +68,8 @@ func Build(database *db.DB, n models.Node, in models.Inbound) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
-	others, err := database.ListNodes()
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range others {
-		if o.RelayNodeID != nil && *o.RelayNodeID == n.ID && strings.TrimSpace(o.RelayUUID) != "" {
-			users = append(users, models.User{
-				Email:   "relay@" + o.Name,
-				UUID:    o.RelayUUID,
-				Enabled: true,
-			})
-		}
-	}
-	var relay *xray.Relay
-	if n.RelayNodeID != nil && *n.RelayNodeID > 0 && *n.RelayNodeID != n.ID {
-		dst, err := database.GetNode(*n.RelayNodeID)
-		if err != nil {
-			return nil, fmt.Errorf("链式目标节点不存在")
-		}
-		addr := NodeAddress(*dst, "")
-		if addr == "" {
-			return nil, fmt.Errorf("链式目标「%s」还没有公网地址", dst.Name)
-		}
-		if strings.TrimSpace(n.RelayUUID) == "" {
-			return nil, fmt.Errorf("链式转发缺少中转 UUID")
-		}
-		targetIn, _ := database.ListInboundsForNode(dst.ID)
-		pub, sid, sni, flow := in.PublicKey, in.ShortID, in.ServerName, in.Flow
-		port := dst.Port
-		for _, ti := range targetIn {
-			if !ti.Enabled {
-				continue
-			}
-			pub = ti.PublicKey
-			sid = ti.ShortID
-			sni = ti.ServerName
-			flow = ti.Flow
-			if ti.Port > 0 {
-				port = ti.Port
-			}
-			break
-		}
-		if port == 0 {
-			port = 443
-		}
-		relay = &xray.Relay{
-			Address:    addr,
-			Port:       port,
-			UUID:       n.RelayUUID,
-			Flow:       flow,
-			PublicKey:  pub,
-			ShortID:    sid,
-			ServerName: sni,
-		}
-	}
 	outs, _ := database.ListOutboundsForNode(n.ID)
-	return xray.BuildFull(inbounds, users, outs, relay), nil
+	return xray.BuildFull(inbounds, users, outs, nil), nil
 }
 
 func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost string) ([]sub.Endpoint, error) {

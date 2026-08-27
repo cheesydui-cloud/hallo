@@ -55,13 +55,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Hallo 面板 %s（第 1 期：单节点 + Xray）
+	fmt.Fprintf(os.Stderr, `Hallo 面板 %s
 
 用法：
   hallo serve [--listen :18080] [--data data]
-  hallo plan add --name NAME [--limit 0] [--days 0] [--note TEXT]
-  hallo plan list
-  hallo user add --email ID [--plan NAME] [--remark TEXT]
+  hallo user add --email ID [--remark TEXT]
   hallo user list
   hallo xray reload
   hallo version

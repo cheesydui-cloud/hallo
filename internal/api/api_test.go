@@ -97,7 +97,20 @@ func TestSetupInboundAndSub(t *testing.T) {
 	if err := json.NewDecoder(lres.Body).Decode(&list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Items) != 1 || list.Items[0].SubURL == "" {
+	if len(list.Items) < 2 {
+		t.Fatalf("expected default user plus alice, got %#v", list)
+	}
+	foundAlice := false
+	for _, it := range list.Items {
+		if it.SubURL == "" {
+			t.Fatalf("empty sub %#v", it)
+		}
+		if len(it.VlessLinks) == 0 {
+			t.Fatalf("missing share links %#v", it)
+		}
+		foundAlice = true
+	}
+	if !foundAlice {
 		t.Fatalf("%#v", list)
 	}
 	sres, err := http.Get(list.Items[0].SubURL)
@@ -238,6 +251,9 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 	}
 	if len(listed.Items) == 0 || !listed.Items[0].KeysOK {
 		t.Fatalf("inbounds %#v", listed.Items)
+	}
+	if listed.Items[0].ShareLink == "" {
+		t.Fatalf("setup inbound missing share_link %#v", listed.Items[0])
 	}
 
 	nres, err := http.DefaultClient.Do(cookieReq(http.MethodGet, ts.URL+"/api/nodes", nil, cookies))

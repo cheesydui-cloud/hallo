@@ -57,7 +57,7 @@ async function submit() {
       <p class="text-[#1677ff] tracking-[0.16em] text-xs font-semibold uppercase">Hallo Panel</p>
       <h1 class="text-3xl font-semibold mt-2">Hallo</h1>
       <p class="text-black/55 mt-2 text-sm">
-        {{ setupNeeded ? '第一次启动，创建管理员并写入默认 Reality 入站。' : '登录管理面板。' }}
+        {{ setupNeeded ? '第一次启动，创建管理员。本机自动装官方 Xray，并生成一条可用的 Reality 节点。' : '登录管理面板。' }}
       </p>
 
       <form class="mt-8 space-y-4" @submit.prevent="submit" v-if="!loading">
