@@ -61,8 +61,8 @@ async function remove(id) {
 
 <template>
   <div>
-    <h2 class="font-display text-3xl mb-2">套餐</h2>
-    <p class="text-ink/50 text-sm mb-6">流量上限 0 表示不限；有效天数 0 表示不过期。对应 CLI：hallo plan add</p>
+    <h2 class="text-xl font-semibold mb-2">套餐</h2>
+    <p class="text-black/45 text-sm mb-6">流量上限 0 表示不限；有效天数 0 表示不过期。</p>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
     <form class="card p-5 mb-6 grid md:grid-cols-5 gap-3 items-end" @submit.prevent="create">

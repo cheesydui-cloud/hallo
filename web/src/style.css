@@ -8,38 +8,35 @@
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(1200px 500px at 10% -10%, #f7d9b8 0%, transparent 50%),
-    radial-gradient(800px 400px at 100% 0%, #d7ebe3 0%, transparent 45%),
-    #f4efe6;
+  background: #f0f2f5;
 }
 
 .card {
-  @apply bg-card rounded-2xl border border-black/5 shadow-[0_20px_50px_-28px_rgba(47,37,24,0.45)];
+  @apply bg-white rounded-lg border border-black/5 shadow-sm;
 }
 
 .btn {
-  @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium transition;
+  @apply inline-flex items-center justify-center rounded-md px-3.5 py-2 text-sm font-medium transition;
 }
 
 .btn-primary {
-  @apply btn bg-ink text-paper hover:bg-black cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  @apply btn bg-[#1677ff] text-white hover:bg-[#4096ff] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
 }
 
 .btn-ghost {
-  @apply btn bg-transparent border border-ink/15 hover:bg-ink/5 cursor-pointer;
+  @apply btn bg-transparent border border-black/10 hover:bg-black/[0.04] cursor-pointer;
 }
 
-.btn-accent {
-  @apply btn bg-accent text-white hover:brightness-110;
+.btn-danger {
+  @apply btn bg-transparent border border-red-200 text-red-600 hover:bg-red-50 cursor-pointer;
 }
 
 .input {
-  @apply w-full rounded-xl border border-ink/10 bg-white px-3 py-2 text-sm outline-none focus:border-pine focus:ring-2 focus:ring-pine/20 min-h-[44px];
+  @apply w-full rounded-md border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-[#1677ff] focus:ring-2 focus:ring-[#1677ff]/20 min-h-[40px];
 }
 
 .label {
-  @apply block text-xs font-medium text-ink/60 mb-1;
+  @apply block text-xs font-medium text-black/55 mb-1;
 }
 
 .toast-stack {
@@ -47,13 +44,33 @@ body {
 }
 
 .toast {
-  @apply rounded-xl px-4 py-3 text-sm shadow-lg border;
+  @apply rounded-md px-4 py-3 text-sm shadow-lg border bg-white;
 }
 
 .toast-ok {
-  @apply bg-white text-pine border-pine/20;
+  @apply text-emerald-700 border-emerald-200;
 }
 
 .toast-err {
-  @apply bg-white text-red-700 border-red-200;
+  @apply text-red-700 border-red-200;
+}
+
+.badge {
+  @apply inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium;
+}
+
+.table-wrap {
+  @apply overflow-x-auto;
+}
+
+table.ui {
+  @apply w-full text-sm;
+}
+
+table.ui th {
+  @apply px-3 py-2.5 text-left font-medium text-black/50 bg-black/[0.03] whitespace-nowrap;
+}
+
+table.ui td {
+  @apply px-3 py-3 border-t border-black/5 align-middle;
 }

@@ -44,6 +44,9 @@ func (u User) Expired() bool {
 
 type Inbound struct {
 	ID         int64  `json:"id"`
+	NodeID     int64  `json:"node_id"`
+	Remark     string `json:"remark"`
+	Tag        string `json:"tag"`
 	Protocol   string `json:"protocol"`
 	Listen     string `json:"listen"`
 	Port       int    `json:"port"`
@@ -53,6 +56,29 @@ type Inbound struct {
 	PrivateKey string `json:"private_key"`
 	PublicKey  string `json:"public_key"`
 	ShortID    string `json:"short_id"`
+	Enabled    bool   `json:"enabled"`
+	NodeName   string `json:"node_name,omitempty"`
+	ClientNum  int    `json:"client_num,omitempty"`
+}
+
+type Outbound struct {
+	ID         int64  `json:"id"`
+	NodeID     int64  `json:"node_id"` // 0 = 所有节点
+	Remark     string `json:"remark"`
+	Tag        string `json:"tag"`
+	Protocol   string `json:"protocol"` // freedom / blackhole / vless / socks / http
+	Address    string `json:"address"`
+	Port       int    `json:"port"`
+	UUID       string `json:"uuid"`
+	Flow       string `json:"flow"`
+	PublicKey  string `json:"public_key"`
+	ShortID    string `json:"short_id"`
+	ServerName string `json:"server_name"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Enabled    bool   `json:"enabled"`
+	IsDefault  bool   `json:"is_default"`
+	NodeName   string `json:"node_name,omitempty"`
 }
 
 type Settings struct {

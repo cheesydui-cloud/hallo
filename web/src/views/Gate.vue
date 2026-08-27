@@ -54,9 +54,9 @@ async function submit() {
 <template>
   <div class="min-h-screen flex items-center justify-center p-6">
     <div class="w-full max-w-md card p-8">
-      <p class="text-accent tracking-[0.2em] text-xs font-semibold uppercase">Phase 1</p>
-      <h1 class="font-display text-4xl mt-2">Hallo</h1>
-      <p class="text-ink/60 mt-2 text-sm">
+      <p class="text-[#1677ff] tracking-[0.16em] text-xs font-semibold uppercase">Hallo Panel</p>
+      <h1 class="text-3xl font-semibold mt-2">Hallo</h1>
+      <p class="text-black/55 mt-2 text-sm">
         {{ setupNeeded ? '第一次启动，创建管理员并写入默认 Reality 入站。' : '登录管理面板。' }}
       </p>
 

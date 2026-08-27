@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { toastOk, toastErr } from '../toast'
+import { copyText } from '../copy'
 
 const items = ref([])
 const error = ref('')
@@ -117,14 +118,9 @@ function relayName(n) {
   return t ? t.name : '#' + n.relay_node_id
 }
 
-async function copy(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    toastOk('已复制')
-  } catch {
-    toastErr('复制失败，请手动选中')
-  }
-}
+	async function copy(text) {
+	  await copyText(text)
+	}
 
 function installCmd(n) {
   return `curl -fsSL '${location.origin}/install/agent.sh?token=${n.token}' | sh`
@@ -135,8 +131,8 @@ function installCmd(n) {
   <div>
     <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
       <div>
-        <h2 class="font-display text-3xl">节点</h2>
-        <p class="text-ink/50 text-sm mt-1 max-w-2xl">
+        <h2 class="text-xl font-semibold">节点</h2>
+        <p class="text-black/45 text-sm mt-1 max-w-2xl">
           每台节点机都会跑官方 Xray。订阅链接用的是节点的<strong>公网地址 + 入站端口</strong>，不是面板端口。
           链式转发：入口节点把流量转到另一台节点再出网。
         </p>
@@ -198,7 +194,7 @@ function installCmd(n) {
             <p v-if="n.relay_node_id" class="text-xs text-accent mt-1">链式转发 → {{ relayName(n) }}</p>
           </div>
           <div class="flex flex-wrap gap-1 justify-end">
-            <button v-if="!n.is_local" class="btn-ghost text-xs" type="button" @click="copy(installCmd(n))">复制安装命令</button>
+            <button v-if="!n.is_local" class="btn-ghost text-xs" type="button" @click="copy(installCmd(n)); hint = installCmd(n)">复制安装命令</button>
             <button v-if="!n.is_local" class="btn-ghost text-xs" type="button" @click="pushOne(n.id)">推送更新</button>
             <button class="btn-ghost text-xs" type="button" @click="editing = editing === n.id ? null : n.id">{{ editing === n.id ? '收起' : '编辑' }}</button>
             <button v-if="!n.is_local" class="btn-ghost text-xs text-red-700" type="button" @click="remove(n)">删除</button>

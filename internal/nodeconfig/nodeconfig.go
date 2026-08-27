@@ -42,7 +42,41 @@ func InboundForNode(base models.Inbound, n models.Node) models.Inbound {
 	return in
 }
 
+func inboundsForNode(database *db.DB, n models.Node) ([]models.Inbound, error) {
+	items, err := database.ListInboundsForNode(n.ID)
+	if err != nil {
+		return nil, err
+	}
+	var enabled []models.Inbound
+	for _, in := range items {
+		if in.Enabled || in.ID == 0 {
+			if in.Port == 0 && n.Port > 0 {
+				in.Port = n.Port
+			}
+			enabled = append(enabled, in)
+		}
+	}
+	if len(enabled) > 0 {
+		return enabled, nil
+	}
+	base, err := database.GetInbound()
+	if err != nil {
+		return nil, err
+	}
+	return []models.Inbound{InboundForNode(*base, n)}, nil
+}
+
 func Build(database *db.DB, n models.Node, in models.Inbound) (map[string]any, error) {
+	inbounds, err := inboundsForNode(database, n)
+	if err != nil {
+		if in.Port == 0 && n.Port > 0 {
+			in.Port = n.Port
+		}
+		inbounds = []models.Inbound{in}
+	}
+	if len(inbounds) == 0 {
+		inbounds = []models.Inbound{InboundForNode(in, n)}
+	}
 	users, err := database.UsersForNode(n.ID)
 	if err != nil {
 		return nil, err
@@ -73,18 +107,37 @@ func Build(database *db.DB, n models.Node, in models.Inbound) (map[string]any, e
 		if strings.TrimSpace(n.RelayUUID) == "" {
 			return nil, fmt.Errorf("链式转发缺少中转 UUID")
 		}
+		targetIn, _ := database.ListInboundsForNode(dst.ID)
+		pub, sid, sni, flow := in.PublicKey, in.ShortID, in.ServerName, in.Flow
+		port := dst.Port
+		for _, ti := range targetIn {
+			if !ti.Enabled {
+				continue
+			}
+			pub = ti.PublicKey
+			sid = ti.ShortID
+			sni = ti.ServerName
+			flow = ti.Flow
+			if ti.Port > 0 {
+				port = ti.Port
+			}
+			break
+		}
+		if port == 0 {
+			port = 443
+		}
 		relay = &xray.Relay{
 			Address:    addr,
-			Port:       dst.Port,
+			Port:       port,
 			UUID:       n.RelayUUID,
-			Flow:       in.Flow,
-			PublicKey:  in.PublicKey,
-			ShortID:    in.ShortID,
-			ServerName: in.ServerName,
+			Flow:       flow,
+			PublicKey:  pub,
+			ShortID:    sid,
+			ServerName: sni,
 		}
 	}
-	cfgIn := InboundForNode(in, n)
-	return xray.BuildConfig(cfgIn, users, relay), nil
+	outs, _ := database.ListOutboundsForNode(n.ID)
+	return xray.BuildFull(inbounds, users, outs, relay), nil
 }
 
 func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost string) ([]sub.Endpoint, error) {
@@ -116,19 +169,58 @@ func Endpoints(database *db.DB, u models.User, in models.Inbound, fallbackHost s
 		if host == "" {
 			continue
 		}
-		port := n.Port
-		if port == 0 {
-			port = in.Port
+		ins, err := database.ListInboundsForNode(n.ID)
+		if err != nil || len(ins) == 0 {
+			port := n.Port
+			if port == 0 {
+				port = in.Port
+			}
+			if port == 0 {
+				port = 443
+			}
+			eps = append(eps, sub.Endpoint{
+				Name:       n.Name,
+				Host:       host,
+				Port:       port,
+				Flow:       in.Flow,
+				ServerName: in.ServerName,
+				PublicKey:  in.PublicKey,
+				ShortID:    in.ShortID,
+			})
+			continue
 		}
-		eps = append(eps, sub.Endpoint{
-			Name:       n.Name,
-			Host:       host,
-			Port:       port,
-			Flow:       in.Flow,
-			ServerName: in.ServerName,
-			PublicKey:  in.PublicKey,
-			ShortID:    in.ShortID,
-		})
+		for _, ib := range ins {
+			if !ib.Enabled {
+				continue
+			}
+			port := ib.Port
+			if port == 0 {
+				port = n.Port
+			}
+			if port == 0 {
+				port = in.Port
+			}
+			name := n.Name
+			if strings.TrimSpace(ib.Remark) != "" && ib.Remark != n.Name {
+				name = n.Name + "-" + ib.Remark
+			}
+			eps = append(eps, sub.Endpoint{
+				Name:       name,
+				Host:       host,
+				Port:       port,
+				Flow:       firstNonEmpty(ib.Flow, in.Flow),
+				ServerName: firstNonEmpty(ib.ServerName, in.ServerName),
+				PublicKey:  firstNonEmpty(ib.PublicKey, in.PublicKey),
+				ShortID:    firstNonEmpty(ib.ShortID, in.ShortID),
+			})
+		}
 	}
 	return eps, nil
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }

@@ -1,12 +1,14 @@
 package xray
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,13 +95,14 @@ func MarshalConfig(cfg map[string]any) ([]byte, error) {
 
 func (m *Manager) Reload() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.bin == "" {
 		m.last = "未配置 xray 路径"
+		m.mu.Unlock()
 		return fmt.Errorf("xray path empty")
 	}
 	if _, err := os.Stat(m.bin); err != nil {
 		m.last = "未找到 xray"
+		m.mu.Unlock()
 		return err
 	}
 	if m.runningLocked() {
@@ -117,29 +120,68 @@ func (m *Manager) Reload() error {
 		}
 		m.cmd = nil
 	}
+	var stderr bytes.Buffer
 	cmd := exec.Command(m.bin, "run", "-c", m.cfg)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Start(); err != nil {
 		m.last = err.Error()
+		m.mu.Unlock()
 		return err
 	}
 	m.cmd = cmd
 	m.last = ""
+	m.mu.Unlock()
 	go func() {
 		err := cmd.Wait()
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.cmd == cmd {
 			m.cmd = nil
+			msg := lastLogLine(stderr.String())
 			if err != nil {
 				m.last = err.Error()
+				if msg != "" {
+					m.last = m.last + " · " + msg
+				}
+			} else if msg != "" {
+				m.last = msg
 			} else {
 				m.last = "已退出"
 			}
 		}
 	}()
+	time.Sleep(350 * time.Millisecond)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.runningLocked() {
+		if m.last == "" {
+			m.last = lastLogLine(stderr.String())
+		}
+		if m.last == "" {
+			m.last = "Xray 启动后立即退出，请检查端口是否被占用"
+		}
+		return fmt.Errorf("%s", m.last)
+	}
 	return nil
+}
+
+func lastLogLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			if len(line) > 240 {
+				return line[len(line)-240:]
+			}
+			return line
+		}
+	}
+	return ""
 }
 
 func (m *Manager) Stop() {
@@ -254,6 +296,98 @@ type Relay struct {
 }
 
 func BuildConfig(in models.Inbound, users []models.User, relay *Relay) map[string]any {
+	return BuildFull([]models.Inbound{in}, users, nil, relay)
+}
+
+func BuildFull(inbounds []models.Inbound, users []models.User, outs []models.Outbound, relay *Relay) map[string]any {
+	xIn := make([]any, 0, len(inbounds))
+	inTags := make([]string, 0, len(inbounds))
+	usedTag := map[string]int{}
+	for i, in := range inbounds {
+		if !in.Enabled && in.ID != 0 {
+			continue
+		}
+		tag := strings.TrimSpace(in.Tag)
+		if tag == "" {
+			tag = "vless-in"
+		}
+		if usedTag[tag] > 0 {
+			tag = fmt.Sprintf("%s-%d", tag, in.ID)
+			if in.ID == 0 {
+				tag = fmt.Sprintf("%s-%d", tag, i+1)
+			}
+		}
+		usedTag[tag]++
+		inTags = append(inTags, tag)
+		xIn = append(xIn, buildVLESSInbound(in, tag, users))
+	}
+	if len(xIn) == 0 && len(inbounds) > 0 {
+		in := inbounds[0]
+		xIn = append(xIn, buildVLESSInbound(in, "vless-in", users))
+		inTags = []string{"vless-in"}
+	}
+
+	outbounds, defaultTag := buildOutbounds(outs)
+	if relay != nil && relay.Address != "" && relay.UUID != "" && relay.Port > 0 {
+		sni := ""
+		flow := ""
+		if len(inbounds) > 0 {
+			sni = inbounds[0].ServerName
+			flow = inbounds[0].Flow
+		}
+		rsni := relay.ServerName
+		if rsni == "" {
+			rsni = sni
+		}
+		vnext := map[string]any{
+			"address": relay.Address,
+			"port":    relay.Port,
+			"users": []any{
+				map[string]any{
+					"id":         relay.UUID,
+					"encryption": "none",
+					"flow":       firstNonEmpty(relay.Flow, flow),
+				},
+			},
+		}
+		outbounds = append([]any{
+			map[string]any{
+				"tag":      "relay",
+				"protocol": "vless",
+				"settings": map[string]any{"vnext": []any{vnext}},
+				"streamSettings": map[string]any{
+					"network":  "tcp",
+					"security": "reality",
+					"realitySettings": map[string]any{
+						"serverName":  rsni,
+						"fingerprint": "chrome",
+						"publicKey":   relay.PublicKey,
+						"shortId":     relay.ShortID,
+					},
+				},
+			},
+		}, outbounds...)
+		defaultTag = "relay"
+	}
+	if defaultTag == "" {
+		defaultTag = "direct"
+	}
+	rules := []any{}
+	if len(inTags) > 0 {
+		rules = append(rules, map[string]any{"type": "field", "inboundTag": inTags, "outboundTag": defaultTag})
+	}
+	return map[string]any{
+		"log":       map[string]any{"loglevel": "warning"},
+		"inbounds":  xIn,
+		"outbounds": outbounds,
+		"routing": map[string]any{
+			"domainStrategy": "AsIs",
+			"rules":          rules,
+		},
+	}
+}
+
+func buildVLESSInbound(in models.Inbound, tag string, users []models.User) map[string]any {
 	clients := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		c := map[string]any{
@@ -281,88 +415,139 @@ func BuildConfig(in models.Inbound, users []models.User, relay *Relay) map[strin
 	if sni == "" {
 		sni = strings.Split(dest, ":")[0]
 	}
-	outbounds := []any{
-		map[string]any{"protocol": "freedom", "tag": "direct"},
-		map[string]any{"protocol": "blackhole", "tag": "block"},
-	}
-	routing := map[string]any{
-		"domainStrategy": "AsIs",
-		"rules": []any{
-			map[string]any{"type": "field", "inboundTag": []string{"vless-in"}, "outboundTag": "direct"},
-		},
-	}
-	if relay != nil && relay.Address != "" && relay.UUID != "" && relay.Port > 0 {
-		rsni := relay.ServerName
-		if rsni == "" {
-			rsni = sni
-		}
-		vnext := map[string]any{
-			"address": relay.Address,
-			"port":    relay.Port,
-			"users": []any{
-				map[string]any{
-					"id":         relay.UUID,
-					"encryption": "none",
-					"flow":       firstNonEmpty(relay.Flow, in.Flow),
-				},
-			},
-		}
-		outbounds = append([]any{
-			map[string]any{
-				"tag":      "relay",
-				"protocol": "vless",
-				"settings": map[string]any{"vnext": []any{vnext}},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"serverName":  rsni,
-						"fingerprint": "chrome",
-						"publicKey":   relay.PublicKey,
-						"shortId":     relay.ShortID,
-					},
-				},
-			},
-		}, outbounds...)
-		routing = map[string]any{
-			"domainStrategy": "AsIs",
-			"rules": []any{
-				map[string]any{"type": "field", "inboundTag": []string{"vless-in"}, "outboundTag": "relay"},
-			},
-		}
-	}
 	return map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "vless-in",
-				"listen":   listen,
-				"port":     port,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    clients,
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"show":        false,
-						"dest":        dest,
-						"xver":        0,
-						"serverNames": []string{sni},
-						"privateKey":  in.PrivateKey,
-						"shortIds":    []string{in.ShortID},
-					},
-				},
-				"sniffing": map[string]any{
-					"enabled":      true,
-					"destOverride": []string{"http", "tls", "quic"},
-				},
+		"tag":      tag,
+		"listen":   listen,
+		"port":     port,
+		"protocol": firstNonEmpty(in.Protocol, "vless"),
+		"settings": map[string]any{
+			"clients":    clients,
+			"decryption": "none",
+		},
+		"streamSettings": map[string]any{
+			"network":  "tcp",
+			"security": "reality",
+			"realitySettings": map[string]any{
+				"show":        false,
+				"dest":        dest,
+				"xver":        0,
+				"serverNames": []string{sni},
+				"privateKey":  in.PrivateKey,
+				"shortIds":    []string{in.ShortID},
 			},
 		},
-		"outbounds": outbounds,
-		"routing":   routing,
+		"sniffing": map[string]any{
+			"enabled":      true,
+			"destOverride": []string{"http", "tls", "quic"},
+		},
+	}
+}
+
+func buildOutbounds(outs []models.Outbound) ([]any, string) {
+	if len(outs) == 0 {
+		return []any{
+			map[string]any{"protocol": "freedom", "tag": "direct"},
+			map[string]any{"protocol": "blackhole", "tag": "block"},
+		}, "direct"
+	}
+	var list []any
+	defaultTag := ""
+	seen := map[string]bool{}
+	for _, o := range outs {
+		if !o.Enabled {
+			continue
+		}
+		tag := strings.TrimSpace(o.Tag)
+		if tag == "" {
+			tag = o.Protocol
+		}
+		if seen[tag] {
+			tag = fmt.Sprintf("%s-%d", tag, o.ID)
+		}
+		seen[tag] = true
+		item := outboundJSON(o, tag)
+		if item == nil {
+			continue
+		}
+		list = append(list, item)
+		if o.IsDefault || defaultTag == "" {
+			defaultTag = tag
+		}
+	}
+	if !seen["direct"] {
+		list = append(list, map[string]any{"protocol": "freedom", "tag": "direct"})
+		if defaultTag == "" {
+			defaultTag = "direct"
+		}
+	}
+	if !seen["block"] {
+		list = append(list, map[string]any{"protocol": "blackhole", "tag": "block"})
+	}
+	if defaultTag == "" {
+		defaultTag = "direct"
+	}
+	return list, defaultTag
+}
+
+func outboundJSON(o models.Outbound, tag string) map[string]any {
+	switch strings.ToLower(o.Protocol) {
+	case "freedom", "direct":
+		return map[string]any{"protocol": "freedom", "tag": tag}
+	case "blackhole", "block":
+		return map[string]any{"protocol": "blackhole", "tag": tag}
+	case "vless":
+		if o.Address == "" || o.Port <= 0 || o.UUID == "" {
+			return nil
+		}
+		user := map[string]any{"id": o.UUID, "encryption": "none"}
+		if o.Flow != "" {
+			user["flow"] = o.Flow
+		}
+		item := map[string]any{
+			"tag":      tag,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"vnext": []any{
+					map[string]any{
+						"address": o.Address,
+						"port":    o.Port,
+						"users":   []any{user},
+					},
+				},
+			},
+		}
+		if o.PublicKey != "" {
+			sni := o.ServerName
+			if sni == "" {
+				sni = o.Address
+			}
+			item["streamSettings"] = map[string]any{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]any{
+					"serverName":  sni,
+					"fingerprint": "chrome",
+					"publicKey":   o.PublicKey,
+					"shortId":     o.ShortID,
+				},
+			}
+		}
+		return item
+	case "socks", "http":
+		if o.Address == "" || o.Port <= 0 {
+			return nil
+		}
+		server := map[string]any{"address": o.Address, "port": o.Port}
+		if o.Username != "" {
+			server["users"] = []any{map[string]any{"user": o.Username, "pass": o.Password}}
+		}
+		return map[string]any{
+			"tag":      tag,
+			"protocol": strings.ToLower(o.Protocol),
+			"settings": map[string]any{"servers": []any{server}},
+		}
+	default:
+		return map[string]any{"protocol": o.Protocol, "tag": tag}
 	}
 }
 

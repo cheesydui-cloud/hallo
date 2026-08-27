@@ -64,3 +64,17 @@ func TestBuildConfigRelay(t *testing.T) {
 		t.Fatalf("%#v", rules)
 	}
 }
+
+func TestBuildFullCustomOutbound(t *testing.T) {
+	in := models.Inbound{Port: 443, Protocol: "vless", Listen: "0.0.0.0", Dest: "www.microsoft.com:443", ServerName: "www.microsoft.com", PrivateKey: "k", PublicKey: "p", ShortID: "s", Enabled: true, Tag: "vless-in"}
+	users := []models.User{{UUID: "u", Email: "e"}}
+	outs := []models.Outbound{
+		{Tag: "direct", Protocol: "freedom", Enabled: true, IsDefault: false},
+		{Tag: "warp", Protocol: "socks", Address: "127.0.0.1", Port: 40000, Enabled: true, IsDefault: true},
+	}
+	cfg := BuildFull([]models.Inbound{in}, users, outs, nil)
+	rules := cfg["routing"].(map[string]any)["rules"].([]any)
+	if rules[0].(map[string]any)["outboundTag"] != "warp" {
+		t.Fatalf("default outbound want warp, got %#v", rules)
+	}
+}

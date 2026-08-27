@@ -78,6 +78,15 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/inbound", s.getInbound)
 		r.Put("/api/inbound", s.putInbound)
 		r.Post("/api/inbound/regen-keys", s.regenKeys)
+		r.Get("/api/inbounds", s.listInbounds)
+		r.Post("/api/inbounds", s.createInbound)
+		r.Put("/api/inbounds/{id}", s.updateInbound)
+		r.Delete("/api/inbounds/{id}", s.deleteInbound)
+		r.Post("/api/inbounds/{id}/regen-keys", s.regenInboundKeys)
+		r.Get("/api/outbounds", s.listOutbounds)
+		r.Post("/api/outbounds", s.createOutbound)
+		r.Put("/api/outbounds/{id}", s.updateOutbound)
+		r.Delete("/api/outbounds/{id}", s.deleteOutbound)
 		r.Post("/api/xray/reload", s.reloadXray)
 		r.Get("/api/settings", s.getSettings)
 		r.Put("/api/settings", s.putSettings)
@@ -278,7 +287,9 @@ func (s *Server) ensureInbound(port int) error {
 	if err != nil {
 		return err
 	}
-	return s.db.SaveInbound(models.Inbound{
+	in := &models.Inbound{
+		Remark:     "本机 Reality",
+		Tag:        "vless-in",
 		Protocol:   "vless",
 		Listen:     "0.0.0.0",
 		Port:       port,
@@ -288,7 +299,13 @@ func (s *Server) ensureInbound(port int) error {
 		PrivateKey: priv,
 		PublicKey:  pub,
 		ShortID:    xray.RandomShortID(),
-	})
+		Enabled:    true,
+	}
+	if local, err := s.db.LocalNode(); err == nil {
+		in.NodeID = local.ID
+		in.Remark = local.Name
+	}
+	return s.db.SaveInbound(in)
 }
 
 func (s *Server) repairInbound(in *models.Inbound) error {
@@ -311,7 +328,7 @@ func (s *Server) repairInbound(in *models.Inbound) error {
 		changed = true
 	}
 	if changed {
-		return s.db.SaveInbound(*in)
+		return s.db.SaveInbound(in)
 	}
 	return nil
 }
@@ -676,6 +693,10 @@ func (s *Server) getInbound(w http.ResponseWriter, r *http.Request) {
 func (s *Server) inboundView(in models.Inbound) map[string]any {
 	return map[string]any{
 		"id":           in.ID,
+		"node_id":      in.NodeID,
+		"node_name":    in.NodeName,
+		"remark":       in.Remark,
+		"tag":          in.Tag,
 		"protocol":     in.Protocol,
 		"listen":       in.Listen,
 		"port":         in.Port,
@@ -685,6 +706,7 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 		"private_key":  in.PrivateKey,
 		"public_key":   in.PublicKey,
 		"short_id":     in.ShortID,
+		"enabled":      in.Enabled,
 		"keys_ok":      xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey),
 		"xray_running": s.xray.Running(),
 		"xray_path":    s.xray.Bin(),
@@ -694,12 +716,7 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 	}
 }
 
-func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
-	var in models.Inbound
-	if err := readJSON(r, &in); err != nil {
-		writeErr(w, 400, "参数错误")
-		return
-	}
+func (s *Server) normalizeInbound(in *models.Inbound) error {
 	if in.Protocol == "" {
 		in.Protocol = "vless"
 	}
@@ -709,12 +726,23 @@ func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
 	if in.Port == 0 {
 		in.Port = s.defaultInboundPort()
 	}
+	if in.Tag == "" {
+		in.Tag = "vless-in"
+	}
+	if in.Dest == "" {
+		in.Dest = "www.microsoft.com:443"
+	}
+	if in.ServerName == "" {
+		in.ServerName = strings.Split(in.Dest, ":")[0]
+	}
+	if in.Flow == "" {
+		in.Flow = "xtls-rprx-vision"
+	}
 	if xray.IsPlaceholderKey(in.PrivateKey) || xray.IsPlaceholderKey(in.PublicKey) ||
 		!xray.ValidRealityKey(in.PrivateKey) || !xray.ValidRealityKey(in.PublicKey) {
 		priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
 		if err != nil {
-			writeErr(w, 500, "生成 Reality 密钥失败："+err.Error())
-			return
+			return fmt.Errorf("生成 Reality 密钥失败：%w", err)
 		}
 		in.PrivateKey = priv
 		in.PublicKey = pub
@@ -722,15 +750,196 @@ func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(in.ShortID) == "" {
 		in.ShortID = xray.RandomShortID()
 	}
+	return nil
+}
+
+func (s *Server) afterInboundSave(in *models.Inbound) error {
+	if in.NodeID > 0 {
+		if n, err := s.db.GetNode(in.NodeID); err == nil && in.Port > 0 {
+			n.Port = in.Port
+			_ = s.db.UpdateNode(*n)
+		}
+	} else if local, err := s.db.LocalNode(); err == nil && in.Port > 0 {
+		local.Port = in.Port
+		_ = s.db.UpdateNode(*local)
+	}
+	return s.syncXray()
+}
+
+func (s *Server) listInbounds(w http.ResponseWriter, r *http.Request) {
+	items, err := s.db.ListInbounds()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	users, _ := s.db.ActiveUsers()
+	out := make([]map[string]any, 0, len(items))
+	for _, in := range items {
+		_ = s.repairInbound(&in)
+		v := s.inboundView(in)
+		v["client_num"] = len(users)
+		out = append(out, v)
+	}
+	writeJSON(w, 200, map[string]any{
+		"items":        out,
+		"xray_running": s.xray.Running(),
+		"xray_path":    s.xray.Bin(),
+		"xray_message": s.xray.Message(),
+	})
+}
+
+func (s *Server) createInbound(w http.ResponseWriter, r *http.Request) {
+	var in models.Inbound
+	if err := readJSON(r, &in); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	in.ID = 0
+	in.Enabled = true
+	if err := s.normalizeInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if in.Remark == "" {
+		if in.NodeID > 0 {
+			if n, err := s.db.GetNode(in.NodeID); err == nil {
+				in.Remark = n.Name
+			}
+		}
+		if in.Remark == "" {
+			in.Remark = fmt.Sprintf("VLESS-%d", in.Port)
+		}
+	}
+	if err := s.db.SaveInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := s.afterInboundSave(&in); err != nil {
+		v := s.inboundView(in)
+		v["ok"] = true
+		v["warning"] = err.Error()
+		writeJSON(w, 200, v)
+		return
+	}
+	writeJSON(w, 200, s.inboundView(in))
+}
+
+func (s *Server) updateInbound(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	cur, err := s.db.GetInboundByID(id)
+	if err != nil {
+		writeErr(w, 404, "入站不存在")
+		return
+	}
+	var in models.Inbound
+	if err := readJSON(r, &in); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	in.ID = cur.ID
+	if err := s.normalizeInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := s.db.SaveInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := s.afterInboundSave(&in); err != nil {
+		v := s.inboundView(in)
+		v["ok"] = true
+		v["warning"] = err.Error()
+		writeJSON(w, 200, v)
+		return
+	}
+	writeJSON(w, 200, s.inboundView(in))
+}
+
+func (s *Server) deleteInbound(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	all, _ := s.db.ListInbounds()
+	if len(all) <= 1 {
+		writeErr(w, 400, "至少保留一条入站")
+		return
+	}
+	if err := s.db.DeleteInbound(id); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	_ = s.syncXray()
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (s *Server) regenInboundKeys(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	in, err := s.db.GetInboundByID(id)
+	if err != nil {
+		writeErr(w, 404, "入站不存在")
+		return
+	}
+	priv, pub, err := xray.GenerateRealityKeys(s.xray.Bin())
+	if err != nil {
+		writeErr(w, 500, "生成 Reality 密钥失败："+err.Error())
+		return
+	}
+	in.PrivateKey = priv
+	in.PublicKey = pub
+	in.ShortID = xray.RandomShortID()
 	if err := s.db.SaveInbound(in); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if local, err := s.db.LocalNode(); err == nil && in.Port > 0 {
-		local.Port = in.Port
-		_ = s.db.UpdateNode(*local)
+	if err := s.afterInboundSave(in); err != nil {
+		v := s.inboundView(*in)
+		v["ok"] = true
+		v["warning"] = err.Error()
+		writeJSON(w, 200, v)
+		return
 	}
-	if err := s.syncXray(); err != nil {
+	writeJSON(w, 200, s.inboundView(*in))
+}
+
+func (s *Server) putInbound(w http.ResponseWriter, r *http.Request) {
+	var in models.Inbound
+	if err := readJSON(r, &in); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	cur, err := s.db.GetInbound()
+	if err == nil {
+		in.ID = cur.ID
+		if in.NodeID == 0 {
+			in.NodeID = cur.NodeID
+		}
+		if in.Remark == "" {
+			in.Remark = cur.Remark
+		}
+		if in.Tag == "" {
+			in.Tag = cur.Tag
+		}
+		in.Enabled = true
+	}
+	if err := s.normalizeInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := s.db.SaveInbound(&in); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := s.afterInboundSave(&in); err != nil {
 		view := s.inboundView(in)
 		view["ok"] = true
 		view["warning"] = err.Error()
@@ -754,7 +963,7 @@ func (s *Server) regenKeys(w http.ResponseWriter, r *http.Request) {
 	in.PrivateKey = priv
 	in.PublicKey = pub
 	in.ShortID = xray.RandomShortID()
-	if err := s.db.SaveInbound(*in); err != nil {
+	if err := s.db.SaveInbound(in); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -766,6 +975,98 @@ func (s *Server) regenKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, s.inboundView(*in))
+}
+
+func (s *Server) listOutbounds(w http.ResponseWriter, r *http.Request) {
+	items, err := s.db.ListOutbounds()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) createOutbound(w http.ResponseWriter, r *http.Request) {
+	var o models.Outbound
+	if err := readJSON(r, &o); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	o.ID = 0
+	o.Enabled = true
+	o.IsDefault = false
+	if o.Protocol == "" {
+		o.Protocol = "freedom"
+	}
+	if o.Tag == "" {
+		o.Tag = o.Protocol
+	}
+	if o.Remark == "" {
+		o.Remark = o.Tag
+	}
+	if err := s.db.SaveOutbound(&o); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	_ = s.syncXray()
+	writeJSON(w, 200, o)
+}
+
+func (s *Server) updateOutbound(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	cur, err := s.db.GetOutbound(id)
+	if err != nil {
+		writeErr(w, 404, "出站不存在")
+		return
+	}
+	var o models.Outbound
+	if err := readJSON(r, &o); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	o.ID = cur.ID
+	if cur.IsDefault {
+		o.IsDefault = true
+		if o.Protocol == "" {
+			o.Protocol = cur.Protocol
+		}
+		if o.Tag == "" {
+			o.Tag = cur.Tag
+		}
+	}
+	if err := s.db.SaveOutbound(&o); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	_ = s.syncXray()
+	writeJSON(w, 200, o)
+}
+
+func (s *Server) deleteOutbound(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	o, err := s.db.GetOutbound(id)
+	if err != nil {
+		writeErr(w, 404, "出站不存在")
+		return
+	}
+	if o.IsDefault {
+		writeErr(w, 400, "默认出站不能删除")
+		return
+	}
+	if err := s.db.DeleteOutbound(id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	_ = s.syncXray()
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) reloadXray(w http.ResponseWriter, r *http.Request) {
@@ -863,11 +1164,51 @@ func (s *Server) RepairInbound() error {
 	if err := s.repairInbound(in); err != nil {
 		return err
 	}
-	return s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", ""))
+	if err := s.ensureLocalNode(in.Port, s.db.GetSetting("public_url", "")); err != nil {
+		return err
+	}
+	s.ensureNodeInbounds()
+	return nil
+}
+
+func (s *Server) ensureNodeInbounds() {
+	nodes, err := s.db.ListNodes()
+	if err != nil {
+		return
+	}
+	base, err := s.db.GetInbound()
+	if err != nil {
+		return
+	}
+	existing, _ := s.db.ListInbounds()
+	has := map[int64]bool{}
+	for _, in := range existing {
+		if in.NodeID > 0 {
+			has[in.NodeID] = true
+		}
+	}
+	for _, n := range nodes {
+		if has[n.ID] {
+			continue
+		}
+		copyIn := *base
+		copyIn.ID = 0
+		copyIn.NodeID = n.ID
+		copyIn.Remark = n.Name
+		copyIn.Tag = fmt.Sprintf("in-%d", n.ID)
+		if n.Port > 0 {
+			copyIn.Port = n.Port
+		}
+		copyIn.Enabled = true
+		if e := s.normalizeInbound(&copyIn); e == nil {
+			_ = s.db.SaveInbound(&copyIn)
+		}
+	}
 }
 
 func (s *Server) ensureLocalNode(port int, publicURL string) error {
-	if _, err := s.db.LocalNode(); err == nil {
+	if local, err := s.db.LocalNode(); err == nil {
+		_, _ = s.db.SQL.Exec(`UPDATE inbounds SET node_id=? WHERE node_id=0`, local.ID)
 		return nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -880,7 +1221,7 @@ func (s *Server) ensureLocalNode(port int, publicURL string) error {
 		return err
 	}
 	host := sub.PublicHost(publicURL, "")
-	_, err = s.db.CreateNode(models.Node{
+	id, err := s.db.CreateNode(models.Node{
 		Name:       "本机",
 		Token:      tok,
 		PublicHost: host,
@@ -891,9 +1232,12 @@ func (s *Server) ensureLocalNode(port int, publicURL string) error {
 	})
 	if err == nil {
 		_, _ = s.db.BumpConfigRev()
+		_, _ = s.db.SQL.Exec(`UPDATE inbounds SET node_id=? WHERE node_id=0`, id)
 	}
 	return err
 }
+
+func (s *Server) SyncXray() error { return s.syncXray() }
 
 func (s *Server) syncXray() error {
 	in, err := s.db.GetInbound()
@@ -1168,6 +1512,18 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if base, err := s.db.GetInbound(); err == nil {
+		copyIn := *base
+		copyIn.ID = 0
+		copyIn.NodeID = saved.ID
+		copyIn.Remark = saved.Name
+		copyIn.Tag = fmt.Sprintf("in-%d", saved.ID)
+		copyIn.Port = saved.Port
+		copyIn.Enabled = true
+		if e := s.normalizeInbound(&copyIn); e == nil {
+			_ = s.db.SaveInbound(&copyIn)
+		}
+	}
 	_ = s.syncXray()
 	pub := s.publicBase(r)
 	install := "curl -fsSL '" + pub + "/install/agent.sh?token=" + saved.Token + "' | sh"
@@ -1175,7 +1531,7 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		"node":         saved,
 		"install_hint": install,
 		"panel":        pub,
-		"message":      "节点已登记。把安装命令拿到节点机 root 执行后，那台机器会装 Xray 并开始转发。",
+		"message":      "节点已登记，并复制了一条 Reality 入站。把安装命令拿到节点机 root 执行后会跑 Xray。",
 	})
 }
 
@@ -1314,9 +1670,13 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		host = strings.TrimSpace(hb.PublicIP)
 	}
 	_ = s.db.TouchNode(n.ID, hb.Version, hb.Arch, host, hb.XrayRunning, hb.XrayMessage)
-	if n.PublicHost == "" && host != "" {
-		n.PublicHost = host
-		_ = s.db.UpdateNode(*n)
+	if host != "" {
+		ipLike := net.ParseIP(host) != nil
+		curIP := net.ParseIP(n.PublicHost)
+		if n.PublicHost == "" || (ipLike && curIP == nil && n.PublicHost != host) {
+			n.PublicHost = host
+			_ = s.db.UpdateNode(*n)
+		}
 	}
 	if n.ForceUpdate && hb.Version != "" && n.DesiredVer != "" && n.DesiredVer != "latest" && !update.Newer(n.DesiredVer, hb.Version) {
 		_ = s.db.ClearNodeForce(n.ID)
@@ -1354,10 +1714,15 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if n.ForceUpdate && pub != "" && arch != "" {
 		reply.UpdateURL = pub + "/download/agent/" + arch
 	}
-	needCfg := n.Enabled && (hb.ConfigRev == "" || hb.ConfigRev != n.ConfigRev)
+	needCfg := n.Enabled && (!hb.XrayRunning || hb.ConfigRev == "" || hb.ConfigRev != n.ConfigRev)
 	if needCfg {
 		in, err := s.db.GetInbound()
 		if err == nil {
+			if n.ConfigRev == "" {
+				if rev, e := s.db.BumpConfigRev(); e == nil {
+					n.ConfigRev = rev
+				}
+			}
 			if cfg, err := nodeconfig.Build(s.db, *n, *in); err == nil {
 				reply.Config = cfg
 				reply.ConfigRev = n.ConfigRev

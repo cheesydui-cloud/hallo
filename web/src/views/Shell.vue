@@ -6,19 +6,22 @@ import { api } from '../api'
 const router = useRouter()
 const route = useRoute()
 const ready = ref(false)
+const version = ref('')
 
 const nav = [
-  { to: '/', label: '总览' },
-  { to: '/users', label: '用户' },
-  { to: '/plans', label: '套餐' },
-  { to: '/inbound', label: '入站' },
-  { to: '/nodes', label: '节点' },
-  { to: '/settings', label: '设置' },
+  { to: '/', label: '总览', icon: '▣' },
+  { to: '/inbounds', label: '入站', icon: '↓' },
+  { to: '/outbounds', label: '出站', icon: '↑' },
+  { to: '/users', label: '客户端', icon: '◉' },
+  { to: '/nodes', label: '节点', icon: '⬡' },
+  { to: '/plans', label: '套餐', icon: '▤' },
+  { to: '/settings', label: '面板设置', icon: '⚙' },
 ]
 
 onMounted(async () => {
   try {
     const m = await api.meta()
+    version.value = m.version || ''
     if (m.setup_needed) {
       router.replace('/login')
       return
@@ -37,27 +40,36 @@ async function logout() {
 </script>
 
 <template>
-  <div v-if="ready" class="min-h-screen">
-    <header class="px-6 py-5 flex items-center gap-8">
-      <div>
-        <div class="font-display text-2xl leading-none">Hallo</div>
-        <div class="text-[11px] tracking-widest uppercase text-ink/40 mt-1">多节点 Reality 面板</div>
+  <div v-if="ready" class="min-h-screen flex bg-[#f0f2f5]">
+    <aside class="w-[220px] shrink-0 bg-[#001529] text-white flex flex-col min-h-screen">
+      <div class="px-5 py-5 border-b border-white/10">
+        <div class="text-lg font-semibold tracking-wide">Hallo</div>
+        <div class="text-[11px] text-white/45 mt-1">Xray 多节点面板</div>
       </div>
-      <nav class="flex gap-1 flex-1">
+      <nav class="flex-1 py-3">
         <router-link
           v-for="item in nav"
           :key="item.to"
           :to="item.to"
-          class="px-3 py-1.5 rounded-full text-sm"
-          :class="route.path === item.to ? 'bg-ink text-paper' : 'text-ink/70 hover:bg-ink/5'"
+          class="flex items-center gap-3 px-5 py-2.5 text-sm text-white/70 hover:text-white hover:bg-white/5"
+          :class="route.path === item.to ? 'bg-[#1677ff] text-white hover:bg-[#1677ff] hover:text-white' : ''"
         >
+          <span class="w-4 text-center opacity-80">{{ item.icon }}</span>
           {{ item.label }}
         </router-link>
       </nav>
-      <button class="btn-ghost text-xs" @click="logout">退出</button>
-    </header>
-    <main class="px-6 pb-16">
-      <router-view />
-    </main>
+      <div class="px-5 py-4 border-t border-white/10 text-[11px] text-white/40 flex items-center justify-between">
+        <span>{{ version || 'dev' }}</span>
+        <button class="text-white/70 hover:text-white" @click="logout">退出</button>
+      </div>
+    </aside>
+    <div class="flex-1 min-w-0">
+      <header class="h-14 bg-white border-b border-black/5 px-6 flex items-center text-sm text-black/55">
+        {{ nav.find((n) => n.to === route.path)?.label || 'Hallo' }}
+      </header>
+      <main class="p-6">
+        <router-view />
+      </main>
+    </div>
   </div>
 </template>

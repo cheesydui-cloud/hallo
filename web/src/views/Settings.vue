@@ -63,13 +63,13 @@ async function apply() {
 
 <template>
   <div class="max-w-xl space-y-6">
-    <h2 class="font-display text-3xl">设置</h2>
+    <h2 class="text-xl font-semibold">面板设置</h2>
 
     <section class="card p-6 space-y-3">
       <div class="flex items-start justify-between gap-4">
         <div>
           <div class="text-xs text-ink/45">面板版本</div>
-          <div class="font-display text-2xl mt-1">{{ s.version || 'dev' }}</div>
+          <div class="text-2xl font-semibold mt-1">{{ s.version || 'dev' }}</div>
           <p class="text-xs text-ink/45 mt-1">更新从 GitHub Release 拉取，不走第三方 CDN。</p>
         </div>
         <button class="btn-ghost text-xs" :disabled="checking" @click="check">

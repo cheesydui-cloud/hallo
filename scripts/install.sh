@@ -229,11 +229,13 @@ EnvironmentFile=-/etc/hallo/hallo.env
 ExecStart=/usr/local/bin/hallo serve
 Restart=always
 RestartSec=2
-LimitNOFILE=1048576
+	LimitNOFILE=1048576
+	AmbientCapabilities=CAP_NET_BIND_SERVICE
+	CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 
-[Install]
-WantedBy=multi-user.target
-UNIT
+	[Install]
+	WantedBy=multi-user.target
+	UNIT
 }
 
 install_xray
@@ -244,13 +246,14 @@ if [ "$UPGRADE" = 1 ] && [ ! -f "$UNIT" ]; then
   UPGRADE=0
 fi
 
-if [ "$UPGRADE" = 1 ]; then
-  systemctl daemon-reload
-  systemctl restart hallo.service
-  echo "Hallo 已升级到 ${VERSION} 并重启（配置与数据库未改）"
-  echo "版本：$(/usr/local/bin/hallo version 2>/dev/null || echo "$VERSION")"
-  exit 0
-fi
+	if [ "$UPGRADE" = 1 ]; then
+	  write_unit
+	  systemctl daemon-reload
+	  systemctl restart hallo.service
+	  echo "Hallo 已升级到 ${VERSION} 并重启（配置与数据库未改）"
+	  echo "版本：$(/usr/local/bin/hallo version 2>/dev/null || echo "$VERSION")"
+	  exit 0
+	fi
 
 write_env
 write_unit

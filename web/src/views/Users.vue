@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { api, formatBytes } from '../api'
 import { toastOk, toastErr } from '../toast'
+import { copyText } from '../copy'
 
 const users = ref([])
 const plans = ref([])
@@ -103,22 +104,15 @@ async function remove(id) {
   }
 }
 
-async function copy(text, key) {
-  if (!text) {
-    toastErr('没有可复制的内容')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(text)
-    copied.value = key
-    toastOk('已复制')
-    setTimeout(() => {
-      if (copied.value === key) copied.value = ''
-    }, 1500)
-  } catch {
-    toastErr('复制失败')
-  }
-}
+	async function copy(text, key) {
+	  const ok = await copyText(text)
+	  if (ok) {
+	    copied.value = key
+	    setTimeout(() => {
+	      if (copied.value === key) copied.value = ''
+	    }, 1500)
+	  }
+	}
 
 function expire(u) {
   if (!u.expire_at) return '不限'
@@ -135,8 +129,8 @@ function nodeLabel(ids) {
 
 <template>
   <div>
-    <h2 class="font-display text-3xl mb-2">用户</h2>
-    <p class="text-ink/50 text-sm mb-6">不选节点 = 订阅包含全部启用节点。选了则只出那些节点的 VLESS。</p>
+    <h2 class="text-xl font-semibold mb-2">客户端</h2>
+    <p class="text-black/45 text-sm mb-6">不选节点 = 订阅包含全部启用节点。选了则只出那些节点的 VLESS。</p>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
     <form class="card p-5 mb-6 grid md:grid-cols-5 gap-3 items-end" @submit.prevent="create">

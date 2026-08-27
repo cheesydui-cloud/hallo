@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE TABLE IF NOT EXISTS inbounds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL DEFAULT 0,
+  remark TEXT NOT NULL DEFAULT '',
+  tag TEXT NOT NULL DEFAULT 'vless-in',
   protocol TEXT NOT NULL DEFAULT 'vless',
   listen TEXT NOT NULL DEFAULT '0.0.0.0',
   port INTEGER NOT NULL DEFAULT 443,
@@ -82,7 +85,27 @@ CREATE TABLE IF NOT EXISTS inbounds (
   server_name TEXT NOT NULL,
   private_key TEXT NOT NULL,
   public_key TEXT NOT NULL,
-  short_id TEXT NOT NULL
+  short_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS outbounds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL DEFAULT 0,
+  remark TEXT NOT NULL DEFAULT '',
+  tag TEXT NOT NULL,
+  protocol TEXT NOT NULL DEFAULT 'freedom',
+  address TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 0,
+  uuid TEXT NOT NULL DEFAULT '',
+  flow TEXT NOT NULL DEFAULT '',
+  public_key TEXT NOT NULL DEFAULT '',
+  short_id TEXT NOT NULL DEFAULT '',
+  server_name TEXT NOT NULL DEFAULT '',
+  username TEXT NOT NULL DEFAULT '',
+  password TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -109,7 +132,10 @@ CREATE TABLE IF NOT EXISTS user_nodes (
 	if err != nil {
 		return err
 	}
-	return d.ensureColumns()
+	if err := d.ensureColumns(); err != nil {
+		return err
+	}
+	return d.EnsureBuiltinOutbounds()
 }
 
 func (d *DB) ensureColumns() error {
@@ -125,6 +151,10 @@ func (d *DB) ensureColumns() error {
 		{"nodes", "xray_running", "INTEGER NOT NULL DEFAULT 0"},
 		{"nodes", "xray_message", "TEXT NOT NULL DEFAULT ''"},
 		{"nodes", "config_rev", "TEXT NOT NULL DEFAULT ''"},
+		{"inbounds", "node_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"inbounds", "remark", "TEXT NOT NULL DEFAULT ''"},
+		{"inbounds", "tag", "TEXT NOT NULL DEFAULT 'vless-in'"},
+		{"inbounds", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	}
 	for _, c := range cols {
 		if d.hasColumn(c.table, c.name) {
@@ -538,29 +568,228 @@ func (d *DB) UsersForNode(nodeID int64) ([]models.User, error) {
 	return out, nil
 }
 
-func (d *DB) GetInbound() (*models.Inbound, error) {
-	row := d.SQL.QueryRow(`SELECT id, protocol, listen, port, flow, dest, server_name, private_key, public_key, short_id FROM inbounds ORDER BY id LIMIT 1`)
-	in := &models.Inbound{}
-	err := row.Scan(&in.ID, &in.Protocol, &in.Listen, &in.Port, &in.Flow, &in.Dest, &in.ServerName, &in.PrivateKey, &in.PublicKey, &in.ShortID)
+const inboundSelect = `SELECT i.id, i.node_id, i.remark, i.tag, i.protocol, i.listen, i.port, i.flow, i.dest, i.server_name, i.private_key, i.public_key, i.short_id, i.enabled, COALESCE(n.name, '') FROM inbounds i LEFT JOIN nodes n ON n.id = i.node_id`
+
+func scanInbound(s scanner) (models.Inbound, error) {
+	var in models.Inbound
+	var enabled int
+	err := s.Scan(&in.ID, &in.NodeID, &in.Remark, &in.Tag, &in.Protocol, &in.Listen, &in.Port, &in.Flow, &in.Dest, &in.ServerName, &in.PrivateKey, &in.PublicKey, &in.ShortID, &enabled, &in.NodeName)
 	if err != nil {
-		return nil, err
+		return in, err
+	}
+	in.Enabled = enabled != 0
+	if in.Tag == "" {
+		in.Tag = "vless-in"
 	}
 	return in, nil
 }
 
-func (d *DB) SaveInbound(in models.Inbound) error {
-	cur, err := d.GetInbound()
-	if err == sql.ErrNoRows {
-		_, err = d.SQL.Exec(`INSERT INTO inbounds (protocol, listen, port, flow, dest, server_name, private_key, public_key, short_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID)
-		return err
+func (d *DB) GetInbound() (*models.Inbound, error) {
+	row := d.SQL.QueryRow(inboundSelect + ` ORDER BY i.id LIMIT 1`)
+	in, err := scanInbound(row)
+	if err != nil {
+		return nil, err
 	}
+	return &in, nil
+}
+
+func (d *DB) GetInboundByID(id int64) (*models.Inbound, error) {
+	row := d.SQL.QueryRow(inboundSelect+` WHERE i.id = ?`, id)
+	in, err := scanInbound(row)
+	if err != nil {
+		return nil, err
+	}
+	return &in, nil
+}
+
+func (d *DB) ListInbounds() ([]models.Inbound, error) {
+	rows, err := d.SQL.Query(inboundSelect + ` ORDER BY i.node_id, i.port, i.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Inbound
+	for rows.Next() {
+		in, err := scanInbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, in)
+	}
+	if out == nil {
+		out = []models.Inbound{}
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) ListInboundsForNode(nodeID int64) ([]models.Inbound, error) {
+	all, err := d.ListInbounds()
+	if err != nil {
+		return nil, err
+	}
+	var out []models.Inbound
+	for _, in := range all {
+		if in.NodeID == nodeID || in.NodeID == 0 {
+			out = append(out, in)
+		}
+	}
+	if out == nil {
+		out = []models.Inbound{}
+	}
+	return out, nil
+}
+
+func (d *DB) SaveInbound(in *models.Inbound) error {
+	if in.Protocol == "" {
+		in.Protocol = "vless"
+	}
+	if in.Listen == "" {
+		in.Listen = "0.0.0.0"
+	}
+	if in.Tag == "" {
+		in.Tag = "vless-in"
+	}
+	enabled := 1
+	if in.ID != 0 && !in.Enabled {
+		enabled = 0
+	}
+	if in.ID == 0 {
+		res, err := d.SQL.Exec(`INSERT INTO inbounds (node_id, remark, tag, protocol, listen, port, flow, dest, server_name, private_key, public_key, short_id, enabled)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled)
+		if err != nil {
+			return err
+		}
+		in.ID, _ = res.LastInsertId()
+		in.Enabled = true
+		return nil
+	}
+	_, err := d.SQL.Exec(`UPDATE inbounds SET node_id=?, remark=?, tag=?, protocol=?, listen=?, port=?, flow=?, dest=?, server_name=?, private_key=?, public_key=?, short_id=?, enabled=? WHERE id=?`,
+		in.NodeID, in.Remark, in.Tag, in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, enabled, in.ID)
+	return err
+}
+
+func (d *DB) DeleteInbound(id int64) error {
+	n, err := d.SQL.Exec(`DELETE FROM inbounds WHERE id=?`, id)
 	if err != nil {
 		return err
 	}
-	_, err = d.SQL.Exec(`UPDATE inbounds SET protocol=?, listen=?, port=?, flow=?, dest=?, server_name=?, private_key=?, public_key=?, short_id=? WHERE id=?`,
-		in.Protocol, in.Listen, in.Port, in.Flow, in.Dest, in.ServerName, in.PrivateKey, in.PublicKey, in.ShortID, cur.ID)
+	aff, _ := n.RowsAffected()
+	if aff == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+const outboundSelect = `SELECT o.id, o.node_id, o.remark, o.tag, o.protocol, o.address, o.port, o.uuid, o.flow, o.public_key, o.short_id, o.server_name, o.username, o.password, o.enabled, o.is_default, COALESCE(n.name, '') FROM outbounds o LEFT JOIN nodes n ON n.id = o.node_id`
+
+func scanOutbound(s scanner) (models.Outbound, error) {
+	var o models.Outbound
+	var enabled, def int
+	err := s.Scan(&o.ID, &o.NodeID, &o.Remark, &o.Tag, &o.Protocol, &o.Address, &o.Port, &o.UUID, &o.Flow, &o.PublicKey, &o.ShortID, &o.ServerName, &o.Username, &o.Password, &enabled, &def, &o.NodeName)
+	if err != nil {
+		return o, err
+	}
+	o.Enabled = enabled != 0
+	o.IsDefault = def != 0
+	return o, nil
+}
+
+func (d *DB) ListOutbounds() ([]models.Outbound, error) {
+	rows, err := d.SQL.Query(outboundSelect + ` ORDER BY o.is_default DESC, o.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Outbound
+	for rows.Next() {
+		o, err := scanOutbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	if out == nil {
+		out = []models.Outbound{}
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) ListOutboundsForNode(nodeID int64) ([]models.Outbound, error) {
+	all, err := d.ListOutbounds()
+	if err != nil {
+		return nil, err
+	}
+	var out []models.Outbound
+	for _, o := range all {
+		if o.NodeID == 0 || o.NodeID == nodeID {
+			out = append(out, o)
+		}
+	}
+	if out == nil {
+		out = []models.Outbound{}
+	}
+	return out, nil
+}
+
+func (d *DB) GetOutbound(id int64) (*models.Outbound, error) {
+	row := d.SQL.QueryRow(outboundSelect+` WHERE o.id = ?`, id)
+	o, err := scanOutbound(row)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+func (d *DB) SaveOutbound(o *models.Outbound) error {
+	if o.Tag == "" {
+		o.Tag = o.Protocol
+	}
+	if o.Protocol == "" {
+		o.Protocol = "freedom"
+	}
+	en, def := 0, 0
+	if o.Enabled {
+		en = 1
+	}
+	if o.IsDefault {
+		def = 1
+	}
+	if o.ID == 0 {
+		if !o.Enabled {
+			en = 1
+			o.Enabled = true
+		}
+		res, err := d.SQL.Exec(`INSERT INTO outbounds (node_id, remark, tag, protocol, address, port, uuid, flow, public_key, short_id, server_name, username, password, enabled, is_default)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			o.NodeID, o.Remark, o.Tag, o.Protocol, o.Address, o.Port, o.UUID, o.Flow, o.PublicKey, o.ShortID, o.ServerName, o.Username, o.Password, en, def)
+		if err != nil {
+			return err
+		}
+		o.ID, _ = res.LastInsertId()
+		return nil
+	}
+	_, err := d.SQL.Exec(`UPDATE outbounds SET node_id=?, remark=?, tag=?, protocol=?, address=?, port=?, uuid=?, flow=?, public_key=?, short_id=?, server_name=?, username=?, password=?, enabled=?, is_default=? WHERE id=?`,
+		o.NodeID, o.Remark, o.Tag, o.Protocol, o.Address, o.Port, o.UUID, o.Flow, o.PublicKey, o.ShortID, o.ServerName, o.Username, o.Password, en, def, o.ID)
+	return err
+}
+
+func (d *DB) DeleteOutbound(id int64) error {
+	_, err := d.SQL.Exec(`DELETE FROM outbounds WHERE id=? AND is_default=0`, id)
+	return err
+}
+
+func (d *DB) EnsureBuiltinOutbounds() error {
+	var n int
+	if err := d.SQL.QueryRow(`SELECT COUNT(*) FROM outbounds`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := d.SQL.Exec(`INSERT INTO outbounds (node_id, remark, tag, protocol, enabled, is_default) VALUES
+	(0, '直连', 'direct', 'freedom', 1, 1),
+	(0, '阻断', 'block', 'blackhole', 1, 0)`)
 	return err
 }
 

@@ -21,7 +21,7 @@ func TestEndpointsAndRelay(t *testing.T) {
 		ServerName: "www.microsoft.com", PublicKey: "pub", ShortID: "abcd",
 		PrivateKey: "priv", Protocol: "vless", Listen: "0.0.0.0",
 	}
-	if err := d.SaveInbound(in); err != nil {
+	if err := d.SaveInbound(&in); err != nil {
 		t.Fatal(err)
 	}
 	localID, err := d.CreateNode(models.Node{Name: "本机", Token: "t1", PublicHost: "1.1.1.1", Port: 443, IsLocal: true, Enabled: true, Subscribe: true})

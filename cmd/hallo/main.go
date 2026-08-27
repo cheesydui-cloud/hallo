@@ -109,17 +109,8 @@ func serve(args []string) {
 	if err := srv.RepairInbound(); err != nil {
 		log.Printf("修复入站密钥失败：%v", err)
 	}
-	in, err := database.GetInbound()
-	if err == nil && xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey) {
-		users, _ := database.ActiveUsers()
-		_ = xm.WriteConfig(*in, users)
-		if _, statErr := os.Stat(xm.Bin()); statErr == nil {
-			if err := xm.Reload(); err != nil {
-				log.Printf("启动 xray 失败：%v", err)
-			}
-		} else {
-			log.Printf("未找到 xray（%s），配置已写好，装好官方 Xray 后点入站页保存即可", xm.Bin())
-		}
+	if err := srv.SyncXray(); err != nil {
+		log.Printf("启动 xray 失败：%v", err)
 	}
 
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Router()}

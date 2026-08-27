@@ -37,8 +37,8 @@ async function reload() {
   <div>
     <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
       <div>
-        <h2 class="font-display text-3xl">总览</h2>
-        <p class="text-ink/50 text-sm mt-1">本机 Xray 由面板拉起；远程节点由 hallo-agent 拉配置并跑 Xray。订阅按节点公网地址出链。</p>
+        <h2 class="text-xl font-semibold">总览</h2>
+        <p class="text-black/45 text-sm mt-1">入站按节点配置；出站决定流量从哪出去。远程节点由 hallo-agent 拉配置并跑官方 Xray。</p>
       </div>
       <button class="btn-primary" :disabled="busy" @click="reload">{{ busy ? '重载中…' : '重载本机 Xray' }}</button>
     </div>
@@ -46,26 +46,26 @@ async function reload() {
     <div v-if="d" class="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
       <div class="card p-5">
         <div class="text-xs text-ink/45">用户</div>
-        <div class="font-display text-3xl mt-2">{{ d.user_enabled }}/{{ d.user_total }}</div>
+        <div class="text-3xl font-semibold mt-2">{{ d.user_enabled }}/{{ d.user_total }}</div>
         <div class="text-xs text-ink/40 mt-1">启用 / 全部</div>
       </div>
       <div class="card p-5">
         <div class="text-xs text-ink/45">套餐</div>
-        <div class="font-display text-3xl mt-2">{{ d.plan_total }}</div>
+        <div class="text-3xl font-semibold mt-2">{{ d.plan_total }}</div>
       </div>
       <div class="card p-5">
         <div class="text-xs text-ink/45">节点</div>
-        <div class="font-display text-3xl mt-2">{{ d.node_online }}/{{ d.node_total }}</div>
+        <div class="text-3xl font-semibold mt-2">{{ d.node_online }}/{{ d.node_total }}</div>
         <div class="text-xs text-ink/40 mt-1">在线 / 全部</div>
       </div>
       <div class="card p-5">
         <div class="text-xs text-ink/45">累计流量</div>
-        <div class="font-display text-3xl mt-2">{{ formatBytes(d.traffic_total) }}</div>
+        <div class="text-3xl font-semibold mt-2">{{ formatBytes(d.traffic_total) }}</div>
         <div class="text-xs text-ink/40 mt-1">精确 Stats 下一期</div>
       </div>
       <div class="card p-5">
         <div class="text-xs text-ink/45">本机 Xray</div>
-        <div class="font-display text-2xl mt-2">{{ d.xray_running ? '运行中' : '未运行' }}</div>
+        <div class="text-2xl font-semibold mt-2">{{ d.xray_running ? '运行中' : '未运行' }}</div>
         <div class="text-xs text-ink/40 mt-1">{{ d.xray_message }}</div>
         <div class="text-xs text-ink/40 mt-1">入站 :{{ d.inbound_port }}</div>
       </div>

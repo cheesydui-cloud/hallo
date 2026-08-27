@@ -4,9 +4,10 @@
 
 当前版本能做的事：
 
-- 浏览器初始化管理员、管用户 / 套餐 / 节点
-- 本机 + 远程节点都跑 **VLESS + Reality**
-- 用户可选节点；订阅按节点公网地址出多条链接（通用 VLESS + Clash YAML）
+- 浏览器初始化管理员；左侧栏：**总览 / 入站 / 出站 / 客户端 / 节点 / 套餐 / 设置**
+- **入站按节点**：每条 VLESS+Reality 绑定一台机器（本机或 Agent）
+- **出站**：freedom 直连、blackhole、VLESS 链式、SOCKS/HTTP 上游；可设默认出站
+- 用户（客户端）可选节点；订阅按节点公网地址出多条链接（通用 VLESS + Clash YAML）
 - 链式转发：入口节点把流量转到另一台节点再出网
 - Reality 密钥由面板用 X25519 生成，不依赖 `xray x25519`
 - 面板自更新、Agent 一键安装 / 推送更新
@@ -31,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 **指定版本：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.2.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.3.0
 ```
 
 **自定义面板端口 / 公网地址：**
@@ -61,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 钉死版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.2.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.3.0
 ```
 
 ---
@@ -139,7 +140,7 @@ HALLO_DEV=1 ./bin/hallo serve --listen :18080 --data data
 发版：
 
 ```bash
-sh scripts/release.sh v0.2.0
+sh scripts/release.sh v0.3.0
 ```
 
 打 Git 标签 `v*` 会触发 GitHub Actions，自动出 Release 附件。
@@ -148,4 +149,4 @@ sh scripts/release.sh v0.2.0
 
 - `dest` 必须是真实可访问的 TLS 网站（默认 `www.microsoft.com:443`）
 - 密钥由面板直接生成；打开入站页会自动替换掉旧的 `CHANGE_ME_*` 占位符
-- 客户端 `pbk` / `sid` / `sni` 来自入站页；`address` / `port` 来自节点页
+- 客户端 `pbk` / `sid` / `sni` / 端口来自该节点自己的入站；出站页决定流量怎么出去
