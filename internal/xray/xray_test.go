@@ -109,3 +109,20 @@ func TestBuildFullVMessAndShadowsocks(t *testing.T) {
 		t.Fatalf("ss settings %#v", settings)
 	}
 }
+
+func TestNormalizeSS2022(t *testing.T) {
+	method, pw, err := NormalizeSS("2022-blake3-aes-128-gcm", "not-valid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != "2022-blake3-aes-128-gcm" {
+		t.Fatalf("method %s", method)
+	}
+	if !ValidSS2022Password(method, pw) {
+		t.Fatalf("generated 2022 password invalid: %q", pw)
+	}
+	m2, p2, err := NormalizeSS(method, pw)
+	if err != nil || m2 != method || p2 != pw {
+		t.Fatalf("should keep valid password, got %s %s", m2, p2)
+	}
+}

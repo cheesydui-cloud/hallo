@@ -313,6 +313,18 @@ func (s *Server) repairInbound(in *models.Inbound) error {
 	if in == nil {
 		return nil
 	}
+	if strings.EqualFold(in.Protocol, "shadowsocks") || strings.EqualFold(in.Protocol, "ss") {
+		method, password, err := xray.NormalizeSS(in.Method, in.Password)
+		if err != nil {
+			return err
+		}
+		if method != in.Method || password != in.Password {
+			in.Method = method
+			in.Password = password
+			return s.db.SaveInbound(in)
+		}
+		return nil
+	}
 	if strings.ToLower(in.Protocol) != "vless" || in.Security == "none" {
 		return nil
 	}
@@ -698,7 +710,7 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 	keysOK := true
 	switch strings.ToLower(in.Protocol) {
 	case "shadowsocks", "ss":
-		keysOK = in.Password != ""
+		keysOK = xray.ValidSS2022Password(in.Method, in.Password)
 	case "vmess":
 		keysOK = true
 	default:
@@ -708,6 +720,7 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 			keysOK = xray.ValidRealityKey(in.PrivateKey) && xray.ValidRealityKey(in.PublicKey)
 		}
 	}
+	link, host := s.inboundShareLink(in)
 	return map[string]any{
 		"id":           in.ID,
 		"node_id":      in.NodeID,
@@ -728,12 +741,52 @@ func (s *Server) inboundView(in models.Inbound) map[string]any {
 		"password":     in.Password,
 		"enabled":      in.Enabled,
 		"keys_ok":      keysOK,
+		"share_link":   link,
+		"share_host":   host,
 		"xray_running": s.xray.Running(),
 		"xray_path":    s.xray.Bin(),
 		"xray_message": s.xray.Message(),
 		"dev":          s.cfg.Dev,
 		"default_port": s.defaultInboundPort(),
 	}
+}
+
+func (s *Server) inboundShareLink(in models.Inbound) (string, string) {
+	host := ""
+	if in.NodeID > 0 {
+		if n, err := s.db.GetNode(in.NodeID); err == nil {
+			host = nodeconfig.NodeAddress(*n, "")
+		}
+	}
+	if host == "" {
+		host = sub.PublicHost(s.db.GetSetting("public_url", ""), "")
+	}
+	name := in.Remark
+	if name == "" {
+		name = in.Tag
+	}
+	ep := sub.Endpoint{
+		Name:       name,
+		Host:       host,
+		Port:       in.Port,
+		Protocol:   in.Protocol,
+		Flow:       in.Flow,
+		Security:   in.Security,
+		ServerName: in.ServerName,
+		PublicKey:  in.PublicKey,
+		ShortID:    in.ShortID,
+		Method:     in.Method,
+		Password:   in.Password,
+	}
+	proto := strings.ToLower(in.Protocol)
+	if proto == "shadowsocks" || proto == "ss" {
+		return sub.ShareLink(ep, models.User{Email: name, Remark: name}, name), host
+	}
+	users, _ := s.db.ActiveUsers()
+	if len(users) == 0 {
+		return "", host
+	}
+	return sub.ShareLink(ep, users[0], name), host
 }
 
 func (s *Server) normalizeInbound(in *models.Inbound) error {
@@ -762,16 +815,12 @@ func (s *Server) normalizeInbound(in *models.Inbound) error {
 	case "shadowsocks":
 		in.Security = "none"
 		in.Flow = ""
-		if in.Method == "" {
-			in.Method = "aes-128-gcm"
+		method, password, err := xray.NormalizeSS(in.Method, in.Password)
+		if err != nil {
+			return err
 		}
-		if strings.TrimSpace(in.Password) == "" {
-			tok, err := auth.RandomToken(12)
-			if err != nil {
-				return err
-			}
-			in.Password = tok
-		}
+		in.Method = method
+		in.Password = password
 	default:
 		if in.Security == "none" {
 			in.Flow = ""
@@ -1302,6 +1351,16 @@ func (s *Server) ensureNodeInbounds() {
 	}
 }
 
+func (s *Server) repairAllInbounds() {
+	items, err := s.db.ListInbounds()
+	if err != nil {
+		return
+	}
+	for i := range items {
+		_ = s.repairInbound(&items[i])
+	}
+}
+
 func (s *Server) ensureLocalNode(port int, publicURL string) error {
 	if local, err := s.db.LocalNode(); err == nil {
 		_, _ = s.db.SQL.Exec(`UPDATE inbounds SET node_id=? WHERE node_id=0`, local.ID)
@@ -1349,6 +1408,7 @@ func (s *Server) syncXray() error {
 		_ = s.ensureLocalNode(s.defaultInboundPort(), s.db.GetSetting("public_url", ""))
 	}
 	s.ensureNodeInbounds()
+	s.repairAllInbounds()
 	_, _ = s.db.BumpConfigRev()
 	local, err := s.db.LocalNode()
 	if err != nil {
@@ -1828,6 +1888,7 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	needCfg := n.Enabled && (!hb.XrayRunning || hb.ConfigRev == "" || hb.ConfigRev != n.ConfigRev)
 	if needCfg {
 		s.ensureNodeInbounds()
+		s.repairAllInbounds()
 		if n.ConfigRev == "" {
 			if rev, e := s.db.BumpConfigRev(); e == nil {
 				n.ConfigRev = rev

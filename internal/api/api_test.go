@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"hallo/internal/config"
@@ -225,10 +226,11 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 	}
 	var listed struct {
 		Items []struct {
-			ID     int64 `json:"id"`
-			NodeID int64 `json:"node_id"`
-			Port   int   `json:"port"`
-			KeysOK bool  `json:"keys_ok"`
+			ID        int64  `json:"id"`
+			NodeID    int64  `json:"node_id"`
+			Port      int    `json:"port"`
+			KeysOK    bool   `json:"keys_ok"`
+			ShareLink string `json:"share_link"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(listRes.Body).Decode(&listed); err != nil {
@@ -372,14 +374,18 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 		t.Fatalf("ss inbound %s %s", ssRes.Status, bb)
 	}
 	var ssIn struct {
-		Protocol string `json:"protocol"`
-		Password string `json:"password"`
-		Method   string `json:"method"`
+		Protocol  string `json:"protocol"`
+		Password  string `json:"password"`
+		Method    string `json:"method"`
+		ShareLink string `json:"share_link"`
 	}
 	_ = json.NewDecoder(ssRes.Body).Decode(&ssIn)
 	ssRes.Body.Close()
 	if ssIn.Protocol != "shadowsocks" || ssIn.Password == "" || ssIn.Method != "aes-128-gcm" {
 		t.Fatalf("ss inbound %#v", ssIn)
+	}
+	if !strings.HasPrefix(ssIn.ShareLink, "ss://") {
+		t.Fatalf("ss share link %q", ssIn.ShareLink)
 	}
 
 	vlessOut, _ := json.Marshal(map[string]any{

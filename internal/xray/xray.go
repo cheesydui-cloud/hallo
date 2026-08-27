@@ -120,10 +120,15 @@ func (m *Manager) Reload() error {
 		}
 		m.cmd = nil
 	}
-	var stderr bytes.Buffer
+	if err := m.testConfigLocked(); err != nil {
+		m.last = err.Error()
+		m.mu.Unlock()
+		return err
+	}
+	var logs bytes.Buffer
 	cmd := exec.Command(m.bin, "run", "-c", m.cfg)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &logs)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &logs)
 	if err := cmd.Start(); err != nil {
 		m.last = err.Error()
 		m.mu.Unlock()
@@ -138,10 +143,10 @@ func (m *Manager) Reload() error {
 		defer m.mu.Unlock()
 		if m.cmd == cmd {
 			m.cmd = nil
-			msg := lastLogLine(stderr.String())
+			msg := lastLogLine(logs.String())
 			if err != nil {
 				m.last = err.Error()
-				if msg != "" {
+				if msg != "" && !strings.Contains(m.last, msg) {
 					m.last = m.last + " · " + msg
 				}
 			} else if msg != "" {
@@ -151,19 +156,40 @@ func (m *Manager) Reload() error {
 			}
 		}
 	}()
-	time.Sleep(350 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.runningLocked() {
-		if m.last == "" {
-			m.last = lastLogLine(stderr.String())
+		if m.last == "" || strings.HasPrefix(m.last, "exit status") {
+			if msg := lastLogLine(logs.String()); msg != "" {
+				m.last = msg
+			}
 		}
 		if m.last == "" {
-			m.last = "Xray 启动后立即退出，请检查端口是否被占用"
+			m.last = "Xray 启动后立即退出，请检查端口是否被占用、配置是否有效"
 		}
 		return fmt.Errorf("%s", m.last)
 	}
 	return nil
+}
+
+func (m *Manager) testConfigLocked() error {
+	cmd := exec.Command(m.bin, "run", "-test", "-c", m.cfg)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	msg := lastLogLine(string(out))
+	if msg == "" {
+		msg = strings.TrimSpace(string(out))
+	}
+	if msg == "" {
+		msg = err.Error()
+	}
+	if len(msg) > 400 {
+		msg = msg[len(msg)-400:]
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 func lastLogLine(s string) string {
@@ -283,6 +309,59 @@ func RandomShortID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func SS2022KeyBytes(method string) int {
+	m := strings.ToLower(strings.TrimSpace(method))
+	switch m {
+	case "2022-blake3-aes-128-gcm":
+		return 16
+	case "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+		return 32
+	default:
+		return 0
+	}
+}
+
+func ValidSS2022Password(method, password string) bool {
+	n := SS2022KeyBytes(method)
+	if n == 0 {
+		return strings.TrimSpace(password) != ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(password))
+	return err == nil && len(raw) == n
+}
+
+func GenerateSSPassword(method string) (string, error) {
+	n := SS2022KeyBytes(method)
+	if n == 0 {
+		n = 16
+		b := make([]byte, n)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(b), nil
+	}
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func NormalizeSS(method, password string) (string, string, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		method = "aes-128-gcm"
+	}
+	if !ValidSS2022Password(method, password) {
+		pw, err := GenerateSSPassword(method)
+		if err != nil {
+			return "", "", err
+		}
+		password = pw
+	}
+	return method, password, nil
 }
 
 type Relay struct {
@@ -495,10 +574,7 @@ func buildVMessInbound(in models.Inbound, tag string, users []models.User) map[s
 
 func buildSSInbound(in models.Inbound, tag string) map[string]any {
 	listen, port := listenPort(in)
-	method := in.Method
-	if method == "" {
-		method = "aes-128-gcm"
-	}
+	method, password, _ := NormalizeSS(in.Method, in.Password)
 	return map[string]any{
 		"tag":      tag,
 		"listen":   listen,
@@ -506,7 +582,7 @@ func buildSSInbound(in models.Inbound, tag string) map[string]any {
 		"protocol": "shadowsocks",
 		"settings": map[string]any{
 			"method":   method,
-			"password": in.Password,
+			"password": password,
 			"network":  "tcp,udp",
 		},
 		"sniffing": sniffing(),

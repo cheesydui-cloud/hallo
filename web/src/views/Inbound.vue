@@ -217,6 +217,18 @@ function isReality(row) {
   const p = (row?.protocol || form.value.protocol || 'vless').toLowerCase()
   return p === 'vless' && (row?.security || form.value.security) !== 'none'
 }
+
+function copyShare(row) {
+  if (!row.share_link) {
+    toastErr('还没有可复制的链接。先去「客户端」加一个用户，再回来复制。')
+    return
+  }
+  if (!row.share_host) {
+    toastErr('这台服务器还没有公网 IP。到「服务器」里填公网地址后再复制。')
+    return
+  }
+  copyText(row.share_link, '已复制节点链接，可直接导入客户端')
+}
 </script>
 
 <template>
@@ -302,6 +314,7 @@ function isReality(row) {
                   </span>
                 </td>
                 <td class="text-right whitespace-nowrap space-x-1">
+                  <button class="btn-primary text-xs" type="button" @click="copyShare(row)">复制链接</button>
                   <button v-if="row.public_key" class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
                   <button v-if="row.password" class="btn-ghost text-xs" type="button" @click="copyText(row.password, '已复制密码')">密码</button>
                   <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
