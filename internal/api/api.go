@@ -88,6 +88,7 @@ func (s *Server) Router() http.Handler {
 		r.Put("/api/outbounds/{id}", s.updateOutbound)
 		r.Delete("/api/outbounds/{id}", s.deleteOutbound)
 		r.Post("/api/xray/reload", s.reloadXray)
+		r.Post("/api/nodes/{id}/reload-xray", s.reloadNodeXray)
 		r.Get("/api/settings", s.getSettings)
 		r.Put("/api/settings", s.putSettings)
 		r.Get("/api/update", s.updateStatus)
@@ -890,6 +891,10 @@ func (s *Server) afterInboundSave(in *models.Inbound) error {
 			_ = s.db.UpdateNode(*n)
 		}
 	}
+	if local, e := s.db.LocalNode(); e == nil && in.NodeID != local.ID {
+		_, _ = s.db.BumpConfigRev()
+		return nil
+	}
 	return s.syncXray()
 }
 
@@ -1214,6 +1219,41 @@ func (s *Server) reloadXray(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "running": s.xray.Running(), "message": s.xray.Message()})
+}
+
+func (s *Server) reloadNodeXray(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, 400, "无效 id")
+		return
+	}
+	n, err := s.db.GetNode(id)
+	if err != nil {
+		writeErr(w, 404, "服务器不存在")
+		return
+	}
+	if n.IsLocal {
+		if err := s.syncXray(); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok":      true,
+			"running": s.xray.Running(),
+			"message": s.xray.Message(),
+		})
+		return
+	}
+	rev := time.Now().UTC().Format("20060102150405")
+	if err := s.db.SetNodeConfigRev(n.ID, rev); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok":      true,
+		"running": false,
+		"message": "已通知这台 Agent 杀掉残留 Xray 并重新拉起，等几秒刷新。",
+	})
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {

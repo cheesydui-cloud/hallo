@@ -105,34 +105,21 @@ func (m *Manager) Reload() error {
 		m.mu.Unlock()
 		return err
 	}
-	if m.runningLocked() {
-		_ = m.cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() {
-			_, _ = m.cmd.Process.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			_ = m.cmd.Process.Kill()
-			<-done
-		}
-		m.cmd = nil
-	}
+	m.stopLocked()
 	if err := m.testConfigLocked(); err != nil {
-		m.last = err.Error()
+		m.last = friendlyXrayErr(err)
 		m.mu.Unlock()
-		return err
+		return fmt.Errorf("%s", m.last)
 	}
 	var logs bytes.Buffer
 	cmd := exec.Command(m.bin, "run", "-c", m.cfg)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout = io.MultiWriter(os.Stdout, &logs)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &logs)
 	if err := cmd.Start(); err != nil {
-		m.last = err.Error()
+		m.last = friendlyXrayErr(err)
 		m.mu.Unlock()
-		return err
+		return fmt.Errorf("%s", m.last)
 	}
 	m.cmd = cmd
 	m.last = ""
@@ -145,9 +132,9 @@ func (m *Manager) Reload() error {
 			m.cmd = nil
 			msg := lastLogLine(logs.String())
 			if err != nil {
-				m.last = err.Error()
-				if msg != "" && !strings.Contains(m.last, msg) {
-					m.last = m.last + " · " + msg
+				m.last = friendlyXrayErr(fmt.Errorf("%s", strings.TrimSpace(err.Error()+" · "+msg)))
+				if msg != "" && !strings.Contains(m.last, msg) && !isAddrInUse(err) {
+					m.last = friendlyXrayErr(fmt.Errorf("%s", msg))
 				}
 			} else if msg != "" {
 				m.last = msg
@@ -160,13 +147,11 @@ func (m *Manager) Reload() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.runningLocked() {
-		if m.last == "" || strings.HasPrefix(m.last, "exit status") {
-			if msg := lastLogLine(logs.String()); msg != "" {
-				m.last = msg
-			}
+		if msg := lastLogLine(logs.String()); msg != "" {
+			m.last = friendlyXrayErr(fmt.Errorf("%s", msg))
 		}
-		if m.last == "" {
-			m.last = "Xray 启动后立即退出，请检查端口是否被占用、配置是否有效"
+		if m.last == "" || strings.HasPrefix(m.last, "exit status") {
+			m.last = "Xray 启动后立即退出。请检查入站端口是否被占用。"
 		}
 		return fmt.Errorf("%s", m.last)
 	}
@@ -213,9 +198,7 @@ func lastLogLine(s string) string {
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.runningLocked() {
-		_ = m.cmd.Process.Signal(syscall.SIGTERM)
-	}
+	m.stopLocked()
 }
 
 func DefaultBin(dataDir string) string {

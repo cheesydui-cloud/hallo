@@ -2,6 +2,8 @@ package xray
 
 import (
 	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
 
 	"hallo/internal/models"
@@ -124,5 +126,12 @@ func TestNormalizeSS2022(t *testing.T) {
 	m2, p2, err := NormalizeSS(method, pw)
 	if err != nil || m2 != method || p2 != pw {
 		t.Fatalf("should keep valid password, got %s %s", m2, p2)
+	}
+}
+
+func TestFriendlyXrayErrPortInUse(t *testing.T) {
+	msg := friendlyXrayErr(fmt.Errorf("failed to listen TCP on 443: listen tcp 0.0.0.0:443: bind: address already in use"))
+	if msg == "" || !strings.Contains(msg, "443") {
+		t.Fatalf("friendly msg %q", msg)
 	}
 }

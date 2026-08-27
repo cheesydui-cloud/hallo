@@ -5,14 +5,14 @@
 **用法（按这个顺序）：**
 
 1. **服务器** — 登记 A/B/C/D，把安装命令拿到那台机用 root 执行，等到「在线」且 Xray 运行中  
-2. **入站** — 左边点那台服务器，右边添加协议；每条入站点「复制链接」可直接导入客户端  
+2. **入站** — 左边点那台服务器，右边添加协议；点「复制」导入客户端；「重启这台 Xray」只重启当前机  
 3. **出站** — 默认直连，不用改  
 4. **客户端** — 加一个用户（VLESS/VMess 需要 UUID）。没有用户就没有 UUID，节点一定不通
 
 当前版本：
 
 - 左侧栏：总览 / 服务器 / 入站 / 出站 / 客户端 / 套餐 / 设置
-- 入站页：先选服务器，再加协议；每条入站可直接复制分享链接
+- 入站页：先选服务器，再加协议；每条入站可直接复制分享链接；重启只针对当前这台机
 - 出站：freedom 直连、blackhole、VLESS 链式、SOCKS/HTTP
 - 订阅按该服务器公网地址出对应协议的分享链接 / Clash
 - 面板自更新、Agent 一键安装 / 推送更新
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 **指定版本：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.5.1
+	curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.6.0
 ```
 
 **自定义面板端口 / 公网地址：**
@@ -66,7 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 钉死版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.5.1
+	curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.6.0
 ```
 
 ---
@@ -143,7 +143,7 @@ HALLO_DEV=1 ./bin/hallo serve --listen :18080 --data data
 发版：
 
 ```bash
-sh scripts/release.sh v0.5.1
+	sh scripts/release.sh v0.6.0
 ```
 
 打 Git 标签 `v*` 会触发 GitHub Actions，自动出 Release 附件。

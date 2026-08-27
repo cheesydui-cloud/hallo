@@ -47,6 +47,7 @@ export const api = {
   updateOutbound: (id, body) => request(`/api/outbounds/${id}`, { method: 'PUT', body }),
   deleteOutbound: (id) => request(`/api/outbounds/${id}`, { method: 'DELETE' }),
   reloadXray: () => request('/api/xray/reload', { method: 'POST', body: {} }),
+  reloadNodeXray: (id) => request(`/api/nodes/${id}/reload-xray`, { method: 'POST', body: {} }),
   settings: () => request('/api/settings'),
   saveSettings: (body) => request('/api/settings', { method: 'PUT', body }),
   updateStatus: () => request('/api/update'),

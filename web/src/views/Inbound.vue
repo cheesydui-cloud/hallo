@@ -64,9 +64,31 @@ watch(selected, (id) => {
 })
 
 function statusOf(n) {
-  if (n.is_local) return n.xray_running ? 'Xray 运行中' : n.xray_message || 'Xray 未启动'
+  if (n.is_local) return n.xray_running ? 'Xray 运行中' : shortErr(n.xray_message) || 'Xray 未启动'
   if (!n.online) return 'Agent 离线'
-  return n.xray_running ? 'Xray 运行中' : n.xray_message || 'Xray 未启动'
+  return n.xray_running ? 'Xray 运行中' : shortErr(n.xray_message) || 'Xray 未启动'
+}
+
+function shortErr(msg) {
+  if (!msg) return ''
+  if (msg.includes('address already in use') || msg.includes('failed to listen')) return '端口被占用'
+  return msg.length > 48 ? msg.slice(0, 48) + '…' : msg
+}
+
+function bannerClass() {
+  const n = current.value
+  if (!n) return xray.value.running ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'
+  if (n.is_local) return n.xray_running ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'
+  if (!n.online) return 'border-amber-200 bg-amber-50 text-amber-900'
+  return n.xray_running ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'
+}
+
+function bannerText() {
+  const n = current.value
+  if (!n) return xray.value.running ? '本机 Xray：运行中' : '本机 Xray：' + (xray.value.message || '未启动')
+  if (n.is_local) return n.xray_running ? '本机 Xray：运行中' : '本机 Xray：' + (n.xray_message || xray.value.message || '未启动')
+  if (!n.online) return '这台 Agent 离线，配置下发不了。先到「服务器」安装 Agent。'
+  return n.xray_running ? '这台 Xray：运行中' : '这台 Xray：' + (n.xray_message || '未启动')
 }
 
 function usedPorts(nodeId, skipId) {
@@ -204,9 +226,13 @@ async function remove(row) {
 }
 
 async function reloadXray() {
+  if (!current.value) {
+    toastErr('先选一台服务器')
+    return
+  }
   try {
-    const r = await api.reloadXray()
-    toastOk(r.message || (r.running ? '本机 Xray 已重载' : '配置已写入'))
+    const r = await api.reloadNodeXray(current.value.id)
+    toastOk(r.message || (r.running ? 'Xray 已重载' : '已通知重启'))
     await load()
   } catch (e) {
     toastErr(e)
@@ -239,14 +265,14 @@ function copyShare(row) {
         <p class="text-sm text-black/45 mt-1">左边选服务器，右边在这台机器上添加 VLESS / VMess / Shadowsocks。同一台机端口不能重复。</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="btn-ghost" type="button" @click="reloadXray">重载本机 Xray</button>
+        <button class="btn-ghost" type="button" @click="reloadXray" :disabled="!current">重启这台 Xray</button>
         <button class="btn-primary" type="button" @click="openAdd" :disabled="!current">+ 添加入站</button>
       </div>
     </div>
 
-    <div class="rounded-md border px-4 py-2.5 text-sm mb-4 flex flex-wrap gap-x-6 gap-y-1" :class="xray.running ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'">
-      <span>本机 Xray：{{ xray.running ? '运行中' : (xray.message || '未启动') }}</span>
-      <span class="font-mono text-xs opacity-70">{{ xray.path }}</span>
+    <div class="rounded-md border px-4 py-2.5 text-sm mb-4" :class="bannerClass()">
+      <div>{{ bannerText() }}</div>
+      <div v-if="current && current.is_local" class="font-mono text-xs opacity-70 mt-1">{{ xray.path }}</div>
     </div>
     <p v-if="error" class="text-red-700 text-sm mb-3">{{ error }}</p>
 
@@ -314,7 +340,7 @@ function copyShare(row) {
                   </span>
                 </td>
                 <td class="text-right whitespace-nowrap space-x-1">
-                  <button class="btn-primary text-xs" type="button" @click="copyShare(row)">复制链接</button>
+                  <button class="btn-primary text-xs" type="button" @click="copyShare(row)">复制</button>
                   <button v-if="row.public_key" class="btn-ghost text-xs" type="button" @click="copyText(row.public_key, '已复制 pbk')">pbk</button>
                   <button v-if="row.password" class="btn-ghost text-xs" type="button" @click="copyText(row.password, '已复制密码')">密码</button>
                   <button class="btn-ghost text-xs" type="button" @click="openEdit(row)">编辑</button>
