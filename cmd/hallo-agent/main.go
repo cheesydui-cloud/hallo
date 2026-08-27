@@ -56,7 +56,7 @@ func usage() {
   hallo-agent version
 
 install 会写入 systemd、尽量安装官方 Xray，并启动。关掉 SSH 后进程仍在。
-节点机会按面板下发的配置跑 VLESS + Reality；可链式转发到另一台节点。
+节点机会按面板下发的配置跑官方 Xray。
 环境变量：HALLO_PANEL HALLO_NODE_ID HALLO_TOKEN HALLO_XRAY
 `, version)
 }

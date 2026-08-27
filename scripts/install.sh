@@ -229,13 +229,13 @@ EnvironmentFile=-/etc/hallo/hallo.env
 ExecStart=/usr/local/bin/hallo serve
 Restart=always
 RestartSec=2
-	LimitNOFILE=1048576
-	AmbientCapabilities=CAP_NET_BIND_SERVICE
-	CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 
-	[Install]
-	WantedBy=multi-user.target
-	UNIT
+[Install]
+WantedBy=multi-user.target
+UNIT
 }
 
 install_xray
@@ -246,14 +246,14 @@ if [ "$UPGRADE" = 1 ] && [ ! -f "$UNIT" ]; then
   UPGRADE=0
 fi
 
-	if [ "$UPGRADE" = 1 ]; then
-	  write_unit
-	  systemctl daemon-reload
-	  systemctl restart hallo.service
-	  echo "Hallo 已升级到 ${VERSION} 并重启（配置与数据库未改）"
-	  echo "版本：$(/usr/local/bin/hallo version 2>/dev/null || echo "$VERSION")"
-	  exit 0
-	fi
+if [ "$UPGRADE" = 1 ]; then
+  write_unit
+  systemctl daemon-reload
+  systemctl restart hallo.service
+  echo "Hallo 已升级到 ${VERSION} 并重启（配置与数据库未改）"
+  echo "版本：$(/usr/local/bin/hallo version 2>/dev/null || echo "$VERSION")"
+  exit 0
+fi
 
 write_env
 write_unit
@@ -279,6 +279,4 @@ echo "生产环境请在前面挂 HTTPS，并把设置里的公网地址改成 h
 echo ""
 echo "升级："
 echo "  curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade"
-echo "给管理员加不限量套餐："
-echo "  hallo plan add --name admin --limit 0 --days 0 --note \"admin自用\""
-echo "  hallo user add --email admin --plan admin --remark \"自己用\""
+echo "然后到面板「服务器」点一键推送全部 Agent。"

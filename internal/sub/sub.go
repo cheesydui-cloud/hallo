@@ -76,9 +76,9 @@ func VLESSLinkNamed(host string, in models.Inbound, u models.User, nodeName stri
 }
 
 func ShareLink(ep Endpoint, u models.User, nodeName string) string {
-	host := ep.Host
+	host := strings.TrimSpace(ep.Host)
 	if host == "" {
-		host = "127.0.0.1"
+		return ""
 	}
 	port := ep.Port
 	if port == 0 {

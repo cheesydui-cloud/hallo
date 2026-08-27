@@ -12,6 +12,7 @@
 
 - 左侧栏只留：服务器 / 协议 / 客户端 / 设置
 - 每台服务器只下发自己的入站；改美国机不会因为本机 443 被占用而失败
+- 复制链接用该服务器公网 IP，不会误用面板地址
 - 协议页可直接复制可用分享链接（默认客户端 UUID 已自动创建）
 - 面板自更新、Agent 一键安装 / 推送更新
 
@@ -32,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 **指定版本：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.7.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --version v0.7.1
 ```
 
 **自定义面板端口 / 公网地址：**
@@ -62,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/
 钉死版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.7.0
+curl -fsSL https://raw.githubusercontent.com/cheesydui-cloud/hallo/main/scripts/install.sh | sh -s -- --upgrade --version v0.7.1
 ```
 
 升级完后，到 **服务器** 点「一键推送全部 Agent」，让远程机换新包。
@@ -135,7 +136,7 @@ HALLO_DEV=1 ./bin/hallo serve --listen :18080 --data data
 发版：
 
 ```bash
-sh scripts/release.sh v0.7.0
+sh scripts/release.sh v0.7.1
 ```
 
 打 Git 标签 `v*` 会触发 GitHub Actions，自动出 Release 附件。

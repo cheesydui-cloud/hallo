@@ -766,10 +766,10 @@ func (s *Server) inboundShareLink(in models.Inbound) (string, string) {
 	if in.NodeID > 0 {
 		if n, err := s.db.GetNode(in.NodeID); err == nil {
 			host = nodeconfig.NodeAddress(*n, "")
+			if host == "" && n.IsLocal {
+				host = sub.PublicHost(s.db.GetSetting("public_url", ""), "")
+			}
 		}
-	}
-	if host == "" {
-		host = sub.PublicHost(s.db.GetSetting("public_url", ""), "")
 	}
 	name := in.Remark
 	if name == "" {
@@ -1928,13 +1928,9 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		host = strings.TrimSpace(hb.PublicIP)
 	}
 	_ = s.db.TouchNode(n.ID, hb.Version, hb.Arch, host, hb.XrayRunning, hb.XrayMessage)
-	if host != "" {
-		ipLike := net.ParseIP(host) != nil
-		curIP := net.ParseIP(n.PublicHost)
-		if n.PublicHost == "" || (ipLike && curIP == nil && n.PublicHost != host) {
-			n.PublicHost = host
-			_ = s.db.UpdateNode(*n)
-		}
+	if host != "" && n.PublicHost == "" {
+		n.PublicHost = host
+		_ = s.db.UpdateNode(*n)
 	}
 	if n.ForceUpdate && hb.Version != "" && n.DesiredVer != "" && n.DesiredVer != "latest" && !update.Newer(n.DesiredVer, hb.Version) {
 		_ = s.db.ClearNodeForce(n.ID)
@@ -1976,8 +1972,10 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if needCfg {
 		s.ensureNodeInbounds()
 		s.repairAllInbounds()
+		_ = s.ensureDefaultUser()
 		if n.ConfigRev == "" {
-			if rev, e := s.db.BumpConfigRev(); e == nil {
+			rev := time.Now().UTC().Format("20060102150405")
+			if e := s.db.SetNodeConfigRev(n.ID, rev); e == nil {
 				n.ConfigRev = rev
 			}
 		}

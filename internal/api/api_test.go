@@ -322,6 +322,39 @@ func TestInboundsOutboundsAndNode(t *testing.T) {
 		t.Fatalf("new node missing inbound %#v", listed2.Items)
 	}
 
+	listRes3, err := http.DefaultClient.Do(cookieReq(http.MethodGet, ts.URL+"/api/inbounds", nil, cookies))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed3 struct {
+		Items []struct {
+			NodeID    int64  `json:"node_id"`
+			ShareHost string `json:"share_host"`
+			ShareLink string `json:"share_link"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(listRes3.Body).Decode(&listed3)
+	listRes3.Body.Close()
+	foundRemote := false
+	for _, it := range listed3.Items {
+		if it.NodeID != created.Node.ID {
+			continue
+		}
+		foundRemote = true
+		if it.ShareHost != "8.8.8.8" {
+			t.Fatalf("remote share_host want 8.8.8.8 got %#v", it)
+		}
+		if it.ShareLink == "" || strings.Contains(it.ShareLink, "127.0.0.1") {
+			t.Fatalf("remote share_link %#v", it)
+		}
+		if !strings.Contains(it.ShareLink, "8.8.8.8") {
+			t.Fatalf("remote share_link missing node host %#v", it)
+		}
+	}
+	if !foundRemote {
+		t.Fatal("remote inbound missing after create")
+	}
+
 	ores, err := http.DefaultClient.Do(cookieReq(http.MethodGet, ts.URL+"/api/outbounds", nil, cookies))
 	if err != nil {
 		t.Fatal(err)

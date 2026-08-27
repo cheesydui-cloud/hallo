@@ -68,4 +68,7 @@ func TestShareLinkVMessAndSS(t *testing.T) {
 	if !strings.Contains(y, "type: vmess") || !strings.Contains(y, "type: ss") {
 		t.Fatalf("clash multi: %s", y)
 	}
+	if ShareLink(Endpoint{Protocol: "vless", Host: "", Port: 443, PublicKey: "p"}, u, "x") != "" {
+		t.Fatal("empty host must not emit a share link")
+	}
 }

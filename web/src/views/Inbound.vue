@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 import { toastOk, toastErr } from '../toast'
 import { copyText } from '../copy'
@@ -35,6 +35,8 @@ const empty = () => ({
 const form = ref(empty())
 
 onMounted(load)
+const poll = setInterval(load, 8000)
+onUnmounted(() => clearInterval(poll))
 
 async function load() {
   error.value = ''
@@ -245,12 +247,8 @@ function isReality(row) {
 }
 
 function copyShare(row) {
-  if (!row.share_link) {
-    toastErr('还没有可复制的链接。刷新页面，或到「客户端」确认已有 UUID。')
-    return
-  }
-  if (!row.share_host) {
-    toastErr('这台服务器还没有公网 IP。到「服务器」里填公网地址后再复制。')
+  if (!row.share_host || !row.share_link) {
+    toastErr('这台服务器还没有公网 IP。到「服务器」填公网地址，或等 Agent 上线自动上报后再复制。')
     return
   }
   copyText(row.share_link, '已复制节点链接，可直接导入客户端')
@@ -289,10 +287,10 @@ function copyShare(row) {
         >
           <div class="flex items-center justify-between gap-2">
             <span class="font-medium text-sm truncate">{{ n.name }}</span>
-            <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="n.online || n.is_local ? 'bg-emerald-500' : 'bg-black/20'" />
+            <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="n.online || (n.is_local && n.xray_running) ? 'bg-emerald-500' : 'bg-black/20'" />
           </div>
           <div class="text-[11px] text-black/40 mt-0.5 truncate">{{ n.public_host || n.host || '未上报 IP' }}</div>
-          <div class="text-[11px] mt-0.5" :class="n.xray_running || n.is_local ? 'text-emerald-700' : 'text-amber-700'">{{ statusOf(n) }}</div>
+          <div class="text-[11px] mt-0.5" :class="n.xray_running ? 'text-emerald-700' : 'text-amber-700'">{{ statusOf(n) }}</div>
         </button>
         <div v-if="!nodes.length" class="px-3 py-8 text-xs text-black/40 text-center">还没有服务器。先去「服务器」添加并安装 Agent。</div>
       </aside>
@@ -301,7 +299,7 @@ function copyShare(row) {
         <div v-if="current" class="flex items-center justify-between mb-3">
           <div>
             <div class="font-medium">{{ current.name }} <span class="text-xs text-black/40 font-normal">{{ current.is_local ? '面板本机' : 'Agent' }}</span></div>
-            <div class="text-xs text-black/45 mt-0.5">{{ current.public_host || current.host || '未上报 IP' }} · 在这台机器上添加不同协议</div>
+            <div class="text-xs text-black/45 mt-0.5">{{ current.public_host || current.host || '未上报 IP，复制链接前先填公网地址' }} · 在这台机器上添加不同协议</div>
           </div>
         </div>
 

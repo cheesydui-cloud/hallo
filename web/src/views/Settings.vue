@@ -12,7 +12,7 @@ const updating = ref(false)
 onMounted(async () => {
   try {
     s.value = await api.settings()
-    await check()
+    await check(false)
   } catch (e) {
     toastErr(e)
   }
@@ -29,15 +29,15 @@ async function save() {
   }
 }
 
-async function check() {
+async function check(notify = true) {
   checking.value = true
   error.value = ''
   try {
     up.value = await api.updateStatus()
-    toastOk(up.value.newer ? `有新版本 ${up.value.latest}` : `已是最新 ${up.value.latest || s.value.version}`)
+    if (notify) toastOk(up.value.newer ? `有新版本 ${up.value.latest}` : `已是最新 ${up.value.latest || s.value.version}`)
   } catch (e) {
     error.value = e.message
-    toastErr(e)
+    if (notify) toastErr(e)
   } finally {
     checking.value = false
   }
